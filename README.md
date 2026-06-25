@@ -8,29 +8,32 @@ to them live in one place:
 
 | Service | Role | Container port | Default host port | Docs |
 |---------|------|----------------|-------------------|------|
-| [`clickhouse/`](clickhouse/) | Centralised **logging** store — one database + restricted user per project | `8123` (HTTP) | `46003` | [README](clickhouse/README.md) |
-| [`valkey/`](valkey/) | Shared **broker / cache / locks** (Redis Streams + Pub/Sub) — one ACL user + key prefix per service | `6379` | `46004` | [README](valkey/README.md) |
-| [`monitoring/`](monitoring/) | **Observability** — Prometheus scrape + Grafana dashboards | `9090` / `3000` | `9090` / `3001` | [README](monitoring/README.md) |
+| `clickhouse` | Centralised **logging** store — one database + restricted user per project | `8123` (HTTP) | `46003` | [README](clickhouse/README.md) |
+| `valkey` | Shared **broker / cache / locks** (Redis Streams + Pub/Sub) — one ACL user + key prefix per service | `6379` | `46004` | [README](valkey/README.md) |
+| `prometheus` + `grafana` | **Observability** — Prometheus scrape + Grafana dashboards | `9090` / `3000` | `9090` / `3001` | [README](monitoring/README.md) |
 
-Each service is a **self-contained Docker Compose stack** with its own
-`.env`, data volume, and README. They are independent — deploy all three on one
-box or spread them across hosts; nothing here assumes a particular machine.
+All four services run from **one combined Docker Compose stack** at the repo
+root (`docker-compose.yml` + `.env`), sharing a single `frdcmp` bridge network.
+They come up and down together on **one host**. Anything co-located on that host
+(including app stacks attached to the `frdcmp` network) can reach them by
+container name — `clickhouse:8123`, `valkey:6379`, `prometheus:9090` — with no
+overlay hop. Each service keeps its own config/data subfolder and README.
 
 ---
 
 ## Deployment topology (fill in per environment)
 
-These services are **host-agnostic**. Where each one runs, what interface it
-binds to, and which port it publishes are all set in that service's `.env` —
-not baked into the repo. Record your actual layout here.
+The whole stack runs on **one host** (all services share the `frdcmp` network).
+What interface each published port binds to and which port it uses are set in
+the single root `.env` — not baked into the repo. Record your actual layout here.
 
-| Service | Host | Bind interface | Endpoint | `.env` knobs |
-|---------|------|----------------|----------|--------------|
-| clickhouse | _your host_ | _overlay IP_ | `http://<ip>:46003` | `CLICKHOUSE_BIND`, `CLICKHOUSE_EXT_PORT` |
-| valkey | _your host_ | _overlay IP_ | `<ip>:46004` | `VK_BIND`, `VK_EXT_PORT` |
-| monitoring | _your host_ | _host_ | Grafana `http://<ip>:3001`, Prom `:9090` | `GRAFANA_ROOT_URL`, `*_EXT_PORT` |
+| Service | Bind interface | Endpoint | `.env` knobs |
+|---------|----------------|----------|--------------|
+| clickhouse | _overlay IP_ | `http://<ip>:46003` | `CLICKHOUSE_BIND`, `CLICKHOUSE_EXT_PORT` |
+| valkey | _overlay IP_ | `<ip>:46004` | `VK_BIND`, `VK_EXT_PORT` |
+| prometheus / grafana | _host_ | Grafana `http://<ip>:3001`, Prom `:9090` | `GRAFANA_ROOT_URL`, `*_EXT_PORT` |
 
-**Networking & security model (shared by all three):**
+**Networking & security model:**
 
 - Each service publishes **one** port, bound to whatever interface you set
   (`*_BIND`). Put them on a **private overlay** (the stacks here use the private overlay)
@@ -38,8 +41,9 @@ not baked into the repo. Record your actual layout here.
 - Auth is always on: ClickHouse per-tenant users, Valkey per-tenant ACL
   passwords, Grafana admin login. The native/internal protocols (ClickHouse
   TCP `9000`) stay inside the container network.
-- A stack co-located on the same host still connects via the same overlay
-  IP:port — no separate localhost wiring needed.
+- A stack on **another** host connects via the overlay IP:port. A stack on
+  **this** host can attach to the `frdcmp` network and use the container name
+  directly — no overlay hop, no published-port round-trip.
 
 ---
 
@@ -106,18 +110,18 @@ add-a-tenant-live commands when the stack is already running.
 
 ## Quick start
 
-Each service is brought up independently:
+The whole stack comes up from one compose file at the repo root:
 
 ```bash
-# per service: clickhouse / valkey / monitoring
-cd <service>
 cp .env.example .env        # then edit: strong passwords + bind IP + tenants
 docker compose up -d
 docker compose logs -f
-```
 
-There is no top-level compose — start only the services you need, on whichever
-host they belong to.
+# operate one service at a time when needed:
+docker compose up -d clickhouse valkey
+docker compose restart grafana
+docker compose logs -f clickhouse
+```
 
 ---
 
@@ -126,9 +130,11 @@ host they belong to.
 ```
 frdcmp-infra/
 ├── README.md            ← you are here: the connection conventions
-├── clickhouse/          ← logging store (self-contained compose stack)
-├── valkey/              ← broker/cache/locks (self-contained compose stack)
-└── monitoring/          ← Prometheus + Grafana (self-contained compose stack)
+├── docker-compose.yml   ← the combined stack (all four services)
+├── .env / .env.example  ← single env for the whole stack
+├── clickhouse/          ← logging store: config.d/, init/, README, data dirs
+├── valkey/              ← broker/cache/locks: valkey.conf, entrypoint.sh, README
+└── monitoring/          ← Prometheus + Grafana: prometheus.yml, grafana/, README
 ```
 
 Secrets (`.env`) and data volumes (`*_data/`, `*_logs/`) are git-ignored — only

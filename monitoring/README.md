@@ -3,16 +3,17 @@
 **Shared observability stack — Prometheus + Grafana.**
 
 A single Prometheus that **scrapes** each project's `/metrics` endpoint over the
-private overlay, plus Grafana with provisioned dashboards. Kept separate from
-any app's compose so it survives app rebuilds/downs and can watch many services
-at once.
+private overlay, plus Grafana with provisioned dashboards.
 
 Metrics are **pulled**, not pushed: each backend just exposes a `/metrics`
 endpoint; Prometheus reaches out on a schedule.
 
 ## Where it runs
 
-Host-agnostic — deploy wherever. Set the published URL/ports in `.env`:
+The `prometheus` and `grafana` services are part of the combined stack at the
+repo root — brought up by the top-level `docker-compose.yml` alongside
+`clickhouse` and `valkey`. Run `docker compose` commands **from the repo root**.
+Published URL/ports come from the single root `.env`:
 
 | | |
 |--|--|
@@ -28,10 +29,12 @@ Host-agnostic — deploy wherever. Set the published URL/ports in `.env`:
 
 ## Quick start
 
+From the **repo root** (one root `.env` covers every service):
+
 ```bash
 cp .env.example .env          # set GRAFANA_ADMIN_PASSWORD + GRAFANA_ROOT_URL
-docker compose up -d
-docker compose logs -f
+docker compose up -d prometheus grafana
+docker compose logs -f grafana
 ```
 
 Grafana comes up with the Prometheus datasource and dashboards already
@@ -64,9 +67,11 @@ attributed to the right node.
 ## Operations
 
 ```bash
-docker compose ps
+docker compose ps                          # status (whole stack)
 docker compose logs -f prometheus
 docker compose logs -f grafana
-docker compose down                 # stop (data persists in named volumes)
-docker compose down -v              # full wipe (drops prometheus_data + grafana_data)
+docker compose stop prometheus grafana     # stop just these (data persists in named volumes)
+# full wipe of monitoring data (named volumes are prefixed with the project name):
+docker compose rm -sf prometheus grafana
+docker volume rm frdcmp-infra_prometheus_data frdcmp-infra_grafana_data
 ```

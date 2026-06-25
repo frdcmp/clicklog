@@ -12,9 +12,11 @@ shared instance.
 
 ## Where it runs
 
-Host-agnostic — deploy on whichever box you like. Where it runs, what it binds
-to, and which port it publishes are all set in `.env`; nothing is baked into the
-repo.
+Part of the combined stack at the repo root — brought up by the top-level
+`docker-compose.yml` alongside `valkey`, `prometheus`, and `grafana`. Run all
+`docker compose` commands **from the repo root** (one service at a time with
+e.g. `docker compose up -d clickhouse`). What it binds to and which port it
+publishes are set in the single root `.env`.
 
 | | |
 |--|--|
@@ -51,23 +53,28 @@ curl -s "http://<infra-host>:46003/?query=SHOW%20DATABASES" -u "admin:<admin-pw>
 
 ## Layout
 
+All paths below are relative to this `clickhouse/` folder (the compose file and
+`.env` live one level up at the repo root).
+
 | Path | Purpose |
 |------|---------|
-| `docker-compose.yml` | The single ClickHouse service. |
-| `.env` / `.env.example` | Secrets + config (port, bind IP, tenants). `.env` is git-ignored. |
+| `../docker-compose.yml` | Defines the `clickhouse` service (combined stack). |
+| `../.env` / `../.env.example` | Secrets + config for the whole stack. `.env` is git-ignored. |
 | `clickhouse/config.d/low-resources.xml` | Memory caps (cgroup-aware, 0.8× of `mem_limit`). |
 | `clickhouse/config.d/network-and-logging.xml` | `listen_host`, log rotation, capped `system.*_log`. |
 | `clickhouse/init/01-init-tenants.sh` | First-boot provisioning of tenant DBs + users from `CH_TENANTS`. |
-| `clickhouse_data/` | Data directory (local volume under `./`, git-ignored). |
+| `clickhouse_data/` | Data directory (local volume, git-ignored). |
 | `clickhouse_logs/` | Server logs (local, git-ignored). |
 
 ---
 
 ## Quick start
 
+From the **repo root** (one root `.env` covers every service):
+
 ```bash
 cp .env.example .env          # then edit: set strong passwords + CLICKHOUSE_BIND
-docker compose up -d
+docker compose up -d clickhouse
 docker compose logs -f clickhouse
 ```
 
@@ -169,10 +176,10 @@ docker compose exec clickhouse clickhouse-client \
 ## Operations
 
 ```bash
-docker compose ps                 # status + health
+docker compose ps                 # status + health (whole stack)
 docker compose logs -f clickhouse # server logs
-docker compose down               # stop (data persists in ./clickhouse_data)
-docker compose down && sudo rm -rf clickhouse_data   # full reset (re-runs init)
+docker compose stop clickhouse    # stop just this service (data persists in clickhouse/clickhouse_data)
+docker compose rm -sf clickhouse && sudo rm -rf clickhouse/clickhouse_data   # full reset (re-runs init)
 ```
 
 Disk usage by table:

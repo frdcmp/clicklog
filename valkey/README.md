@@ -12,9 +12,11 @@ ACL**, not by database (Valkey's numbered DBs do *not* isolate — see below).
 
 ## Where it runs
 
-Host-agnostic — deploy on whichever box you like. Where it runs, what it binds
-to, and which port it publishes are all set in `.env`; nothing is baked into the
-repo.
+Part of the combined stack at the repo root — brought up by the top-level
+`docker-compose.yml` alongside `clickhouse`, `prometheus`, and `grafana`. Run all
+`docker compose` commands **from the repo root** (one service at a time with
+e.g. `docker compose up -d valkey`). What it binds to and which port it
+publishes are set in the single root `.env`.
 
 | | |
 |--|--|
@@ -125,9 +127,11 @@ renaming them (a code change in the app + workers):
 
 ## Quick start
 
+From the **repo root** (one root `.env` covers every service):
+
 ```bash
 cp .env.example .env          # set strong passwords + VK_BIND + VK_TENANTS
-docker compose up -d
+docker compose up -d valkey
 docker compose logs -f valkey
 ```
 
@@ -186,8 +190,8 @@ Then rename its keys/streams/channels per the migration map above, and drop the
 ## Adding a new service (tenant)
 
 1. Add `name:password` to `VK_TENANTS` in `.env`.
-2. Recreate so the ACL regenerates: `docker compose up -d --force-recreate`
-   *(ACLs are rebuilt from env on every boot; no data is lost — it's in `./valkey_data`)*.
+2. Recreate so the ACL regenerates: `docker compose up -d --force-recreate valkey`
+   *(ACLs are rebuilt from env on every boot; no data is lost — it's in `valkey/valkey_data`)*.
    Or add it live without a restart:
    ```bash
    source .env
@@ -202,11 +206,11 @@ Then rename its keys/streams/channels per the migration map above, and drop the
 ## Operations
 
 ```bash
-docker compose ps
+docker compose ps                              # status (whole stack)
 docker compose logs -f valkey
-docker compose down                       # stop (data persists in ./valkey_data)
-docker compose up -d --force-recreate     # reload after editing VK_TENANTS
-docker compose down && sudo rm -rf valkey_data   # full wipe
+docker compose stop valkey                     # stop just this service (data persists in valkey/valkey_data)
+docker compose up -d --force-recreate valkey   # reload after editing VK_TENANTS
+docker compose rm -sf valkey && sudo rm -rf valkey/valkey_data   # full wipe
 
 # memory / keyspace:
 source .env

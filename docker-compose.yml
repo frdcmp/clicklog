@@ -1,0 +1,175 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# frdcmp-infra — combined infrastructure stack
+#
+# One Compose project bringing up every shared backing service on a single host:
+#
+#   • clickhouse  — centralised logging store (one db + restricted user/project)
+#   • valkey      — broker / cache / locks (one ACL user + key prefix/service)
+#   • prometheus  — metrics scraper
+#   • grafana     — dashboards
+#
+# All four share ONE bridge network (`frdcmp`), so anything co-located on this
+# host — including app stacks attached to this network — can reach them by
+# container name (clickhouse:8123, valkey:6379, prometheus:9090). External access
+# is still via the published ports below, bound to whatever interface you set in
+# .env (default 127.0.0.1; use the private-overlay IP in production, never a
+# public NIC).
+#
+# Config & secrets live in ./.env (copy from .env.example). See README.md.
+# ─────────────────────────────────────────────────────────────────────────────
+name: frdcmp-infra
+
+services:
+  # ── Centralised logging ClickHouse ──────────────────────────────────────────
+  # One ClickHouse server holding log data for every project stack. Each project
+  # gets its OWN database + restricted user; tenants are provisioned on first
+  # boot from CH_TENANTS by ./clickhouse/clickhouse/init/01-init-tenants.sh.
+  clickhouse:
+    container_name: frdcmp-clickhouse
+    image: clickhouse/clickhouse-server:24
+    restart: unless-stopped
+    environment:
+      # Bootstrap admin user. The init script connects as this user to create
+      # the per-tenant databases/users, so it needs access management.
+      - CLICKHOUSE_USER=${CLICKHOUSE_ADMIN_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_ADMIN_PASSWORD}
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+      # Consumed by the init script to provision tenants (db:user:password …).
+      - CH_TENANTS=${CH_TENANTS}
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    # ClickHouse is cgroup-aware and caps its server memory at 0.8x of this
+    # limit via ./clickhouse/clickhouse/config.d/low-resources.xml; the limit
+    # itself is the hard backstop, set above that cap to leave headroom for
+    # allocator RSS. memswap_limit == mem_limit → disallow swap, fail fast
+    # instead of thrashing.
+    mem_limit: ${CLICKHOUSE_MEM_LIMIT:-2g}
+    memswap_limit: ${CLICKHOUSE_MEM_LIMIT:-2g}
+    cpus: ${CLICKHOUSE_CPUS:-2}
+    volumes:
+      # Local data + logs under ./clickhouse/.
+      - ./clickhouse/clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse/clickhouse_logs:/var/log/clickhouse-server
+      # Standard config overrides (read-only).
+      - ./clickhouse/clickhouse/config.d/low-resources.xml:/etc/clickhouse-server/config.d/low-resources.xml:ro
+      - ./clickhouse/clickhouse/config.d/network-and-logging.xml:/etc/clickhouse-server/config.d/network-and-logging.xml:ro
+      # First-boot tenant provisioning.
+      - ./clickhouse/clickhouse/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--user", "${CLICKHOUSE_ADMIN_USER}", "--password", "${CLICKHOUSE_ADMIN_PASSWORD}", "--query", "SELECT 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - frdcmp
+    # Expose ONLY the HTTP port (8123), on a single high port, bound to
+    # CLICKHOUSE_BIND. Default 127.0.0.1 (localhost-only, safe). In production set
+    # CLICKHOUSE_BIND to the host's private-overlay IP (e.g. the private overlay) so project
+    # log workers on OTHER hosts can reach it. Stacks ON this host can instead use
+    # the internal name clickhouse:8123. NEVER bind to a public NIC. The native
+    # TCP protocol (9000) is intentionally kept internal-only.
+    ports:
+      - "${CLICKHOUSE_BIND:-127.0.0.1}:${CLICKHOUSE_EXT_PORT:-46003}:8123"
+
+  # ── Shared Valkey broker ─────────────────────────────────────────────────────
+  # One Valkey (Redis fork) server: central broker / cache / lock store. No real
+  # multi-db isolation, so tenancy is by KEY/CHANNEL PREFIX + ACL — each service
+  # is locked to `~<service>:*` keys and `&<service>:*` channels. ACL users are
+  # regenerated on every boot from VK_TENANTS by ./valkey/valkey/entrypoint.sh.
+  valkey:
+    container_name: frdcmp-valkey
+    image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    environment:
+      # Bootstrap admin = the `default` ACL user (full access). Used by the
+      # healthcheck and for ops/migration.
+      - VK_ADMIN_PASSWORD=${VK_ADMIN_PASSWORD}
+      # Consumed by entrypoint.sh to generate per-tenant ACL users (name:password …).
+      - VK_TENANTS=${VK_TENANTS}
+      # maxmemory cap, passed to valkey-server. Keep below mem_limit.
+      - VK_MAXMEMORY=${VK_MAXMEMORY:-768mb}
+    # entrypoint.sh builds the ACL file from VK_TENANTS, then execs valkey-server.
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    volumes:
+      - ./valkey/valkey_data:/data
+      - ./valkey/valkey/valkey.conf:/etc/valkey/valkey.conf:ro
+      - ./valkey/valkey/entrypoint.sh:/entrypoint.sh:ro
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    # memswap_limit == mem_limit → no swap; fail fast instead of thrashing.
+    mem_limit: ${VK_MEM_LIMIT:-1g}
+    memswap_limit: ${VK_MEM_LIMIT:-1g}
+    cpus: ${VK_CPUS:-1}
+    healthcheck:
+      # $$ escapes compose interpolation so the literal var reaches the shell.
+      test: ["CMD-SHELL", "valkey-cli --no-auth-warning -a \"$$VK_ADMIN_PASSWORD\" ping | grep -q PONG"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - frdcmp
+    # Publish ONLY the Valkey port, bound to VK_BIND. Default 127.0.0.1. In
+    # production set VK_BIND to the host's private-overlay IP so workers on OTHER
+    # hosts can reach it; stacks ON this host can use the internal name
+    # valkey:6379. NEVER bind to a public NIC. Auth is enforced by ACL.
+    ports:
+      - "${VK_BIND:-127.0.0.1}:${VK_EXT_PORT:-46004}:6379"
+
+  # ── Prometheus (metrics scraper) ─────────────────────────────────────────────
+  # Scrapes each backend's /metrics over the private overlay — see
+  # ./monitoring/prometheus/prometheus.yml.
+  prometheus:
+    container_name: frdcmp-prometheus
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--storage.tsdb.retention.size=5GB"
+      - "--web.enable-lifecycle"
+    ports:
+      - "${PROMETHEUS_EXT_PORT:-9090}:9090"
+    networks:
+      - frdcmp
+
+  # ── Grafana (dashboards) ─────────────────────────────────────────────────────
+  # Reaches Prometheus by service-name alias (http://prometheus:9090) on the
+  # shared network — see ./monitoring/grafana/provisioning/datasources.
+  grafana:
+    container_name: frdcmp-grafana
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-changeme}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      # However this host is reached (set in .env). 3000 is often taken by a dev server.
+      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://127.0.0.1:3001}
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "${GRAFANA_EXT_PORT:-3001}:3000"
+    networks:
+      - frdcmp
+
+volumes:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  frdcmp:
+    driver: bridge
