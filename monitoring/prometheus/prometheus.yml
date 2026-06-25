@@ -1,0 +1,41 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  # Prometheus itself.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # AppOne Rust API — scraped per node over the private overlay (both in Bangkok, ~ms away).
+  # The actix prometheus middleware lives at rust:8002/metrics, reachable through
+  # each node's docker nginx at /api/v3/metrics (nginx strips the /api/v3 prefix).
+  # We hit each node DIRECTLY (not the decalitro round-robin edge) so metrics are
+  # attributed to the right node.
+  - job_name: app_one-api
+    metrics_path: /api/v3/metrics
+    static_configs:
+      - targets: ["172.25.212.41:8099"]
+        labels: { service: app_one, node: <node> }
+      - targets: ["172.25.125.233:8099"]
+        labels: { service: app_one, node: <infra-host> }
+      - targets: ["172.25.20.102:8099"]
+        labels: { service: app_one, node: decaberry }
+
+  # Host metrics (RAM / swap / CPU / disk / PSI pressure) via node_exporter.
+  # decaberry runs the live stack on a Raspberry Pi — watch it for OOM pressure.
+  # node_exporter listens on :9100 (host network) on each box.
+  - job_name: node
+    static_configs:
+      - targets: ["172.25.20.102:9100"]
+        labels: { node: decaberry }
+
+  # AppTwo Rust API — actix prometheus middleware at rust:8080/metrics,
+  # served at /metrics through its docker nginx (host :8001 on <node>). Runs on
+  # <node> only for now.
+  - job_name: app_two-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["172.25.212.41:8001"]
+        labels: { service: app_two, node: <node> }

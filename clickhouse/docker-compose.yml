@@ -1,0 +1,67 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Centralised logging ClickHouse — decalitro
+#
+# A single ClickHouse server that holds the log data for every project on the
+# decalitro stack (app_one, app_two, …). Each project gets its OWN
+# database and its OWN restricted user; the per-project log workers create their
+# tables and write into their database over HTTP. This replaces the separate
+# per-repo ClickHouse instances (one used to run per stack — e.g. app_one's
+# own ClickHouse on <infra-host>), consolidating resources onto one host (decalitro).
+#
+# Tenants (databases + users) are provisioned on first boot from CH_TENANTS in
+# .env by ./clickhouse/init/01-init-tenants.sh.
+# ─────────────────────────────────────────────────────────────────────────────
+name: decalitro-clickhouse
+
+services:
+  clickhouse:
+    container_name: decalitro-clickhouse
+    image: clickhouse/clickhouse-server:24
+    restart: unless-stopped
+    environment:
+      # Bootstrap admin user. The init script connects as this user to create
+      # the per-tenant databases/users, so it needs access management.
+      - CLICKHOUSE_USER=${CLICKHOUSE_ADMIN_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_ADMIN_PASSWORD}
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+      # Consumed by the init script to provision tenants (db:user:password …).
+      - CH_TENANTS=${CH_TENANTS}
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    # ClickHouse is cgroup-aware and caps its server memory at 0.8x of this
+    # limit via ./clickhouse/config.d/low-resources.xml; the limit itself is the
+    # hard backstop, set above that cap to leave headroom for allocator RSS.
+    # memswap_limit == mem_limit → disallow swap, fail fast instead of thrashing.
+    mem_limit: ${CLICKHOUSE_MEM_LIMIT:-2g}
+    memswap_limit: ${CLICKHOUSE_MEM_LIMIT:-2g}
+    cpus: ${CLICKHOUSE_CPUS:-2}
+    volumes:
+      # Local data + logs under ./ (this repo dir), as requested.
+      - ./clickhouse_data:/var/lib/clickhouse
+      - ./clickhouse_logs:/var/log/clickhouse-server
+      # Standard config overrides (read-only).
+      - ./clickhouse/config.d/low-resources.xml:/etc/clickhouse-server/config.d/low-resources.xml:ro
+      - ./clickhouse/config.d/network-and-logging.xml:/etc/clickhouse-server/config.d/network-and-logging.xml:ro
+      # First-boot tenant provisioning.
+      - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--user", "${CLICKHOUSE_ADMIN_USER}", "--password", "${CLICKHOUSE_ADMIN_PASSWORD}", "--query", "SELECT 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - network
+    # Expose ONLY the HTTP port (8123), on a single random high port, bound to
+    # CLICKHOUSE_BIND. Default 127.0.0.1 (localhost-only, safe). On decalitro set
+    # CLICKHOUSE_BIND=172.25.3.220 (its the private overlay IP) so project log workers can
+    # reach it over the private overlay. NEVER bind to the public NIC (176.123.2.138).
+    # The native TCP protocol (9000) is intentionally kept internal-only.
+    ports:
+      - "${CLICKHOUSE_BIND:-127.0.0.1}:${CLICKHOUSE_EXT_PORT:-46003}:8123"
+
+networks:
+  network:
+    driver: bridge

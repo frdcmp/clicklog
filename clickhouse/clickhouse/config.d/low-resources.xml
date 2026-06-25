@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<!--
+  Low-resource overrides for ClickHouse.
+
+  ClickHouse is cgroup-aware: it sizes itself off the Docker mem_limit set in
+  docker-compose.yml, NOT host RAM. At a small limit it enters "low memory
+  mode" where it IGNORES an absolute max_server_memory_usage and always derives
+  the server cap from the ratio below. So the ratio is the real knob:
+      server cap = 0.8 * (Docker mem_limit)
+  At the default 2g limit that is ~1.6 GiB, leaving headroom under the hard
+  Docker backstop. Lower CLICKHOUSE_MEM_LIMIT in compose to shrink both at once.
+
+  Only memory knobs are touched here on purpose. Capping thread pools
+  (max_thread_pool_size / background_pool_size) saves almost no idle RAM
+  (threads are lazy) but can starve the startup thread that opens the client
+  listener and hang the server, so those are left at their defaults.
+-->
+<clickhouse>
+    <max_server_memory_usage_to_ram_ratio>0.8</max_server_memory_usage_to_ram_ratio>
+
+    <!-- Caches: defaults are 5 GiB / 8 GiB. A small logs dataset needs almost none. -->
+    <mark_cache_size>134217728</mark_cache_size>          <!-- 128 MiB (def 5 GiB) -->
+    <uncompressed_cache_size>0</uncompressed_cache_size>  <!-- disabled (def 8 GiB) -->
+
+    <!-- A handful of logs-worker writers + the occasional admin read query.
+         No need for the default 100 concurrent queries. -->
+    <max_concurrent_queries>32</max_concurrent_queries>
+</clickhouse>

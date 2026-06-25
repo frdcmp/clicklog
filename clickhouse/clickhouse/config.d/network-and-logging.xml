@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<!--
+  Network + server-log overrides for the centralised logging ClickHouse.
+
+  listen_host 0.0.0.0 makes the server accept connections on the container's
+  network interface so Docker's published port can forward to it. This is NOT a
+  public exposure on its own: the only externally reachable surface is the
+  single published HTTP port in docker-compose.yml, which is bound to
+  CLICKHOUSE_BIND (default 127.0.0.1; set to the host's the private overlay IP in prod).
+  Never bind that published port to a public interface.
+
+  The internal server logs (system.*_log tables and text logs) are capped so
+  ClickHouse's own bookkeeping never out-grows the application log data we
+  actually care about.
+-->
+<clickhouse>
+    <listen_host>0.0.0.0</listen_host>
+
+    <!-- Text log file rotation: keep the footprint small. -->
+    <logger>
+        <level>information</level>
+        <size>200M</size>
+        <count>5</count>
+    </logger>
+
+    <!-- Cap the built-in system telemetry tables (these are MergeTree tables
+         ClickHouse writes to itself; left unbounded they can dwarf real data). -->
+    <query_log>
+        <database>system</database>
+        <table>query_log</table>
+        <ttl>event_date + INTERVAL 14 DAY DELETE</ttl>
+        <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+    </query_log>
+    <trace_log remove="remove"/>
+    <metric_log remove="remove"/>
+    <asynchronous_metric_log remove="remove"/>
+    <session_log remove="remove"/>
+</clickhouse>

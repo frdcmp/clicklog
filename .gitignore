@@ -1,0 +1,12 @@
+# Secrets — every service reads its own .env (never committed)
+.env
+**/.env
+
+# Local data / logs (bind-mounted under each service dir)
+**/clickhouse_data/
+**/clickhouse_logs/
+**/valkey_data/
+
+# Editor / OS noise
+*.bak
+.DS_Store

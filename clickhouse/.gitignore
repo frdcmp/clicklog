@@ -1,0 +1,6 @@
+# Secrets
+.env
+
+# Local ClickHouse data + logs (bind-mounted under ./)
+/clickhouse_data/
+/clickhouse_logs/

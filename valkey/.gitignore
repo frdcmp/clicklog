@@ -1,0 +1,5 @@
+# Secrets
+.env
+
+# Local Valkey data (AOF + RDB, bind-mounted under ./)
+/valkey_data/
