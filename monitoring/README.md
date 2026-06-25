@@ -18,11 +18,11 @@ Host-agnostic — deploy wherever. Set the published URL/ports in `.env`:
 |--|--|
 | **Grafana** | host port `${GRAFANA_EXT_PORT}` (default `3001`) → container `3000` |
 | **Prometheus** | host port `${PROMETHEUS_EXT_PORT}` (default `9090`) → container `9090` |
-| **Root URL** | `GRAFANA_ROOT_URL` — how Grafana is reached (e.g. `http://172.25.212.41:3001`) |
+| **Root URL** | `GRAFANA_ROOT_URL` — how Grafana is reached (e.g. `http://<your-overlay-ip>:3001`) |
 
 ```
   app_one /metrics ─┐
-  app_two /metrics ─┤── scrape (the private overlay 172.25.x) ──▶  Prometheus ──▶ Grafana
+  app_two /metrics ─┤── scrape (private overlay) ──────▶  Prometheus ──▶ Grafana
   node_exporter :9100   ─┘
 ```
 

@@ -1,37 +1,41 @@
-# decalitro-valkey
+# valkey
 
-**Shared Valkey broker for all decalitro project stacks.**
+**Shared Valkey broker for all frdcmp project stacks.**
 
 A single Valkey (open-source Redis fork) server acting as the central **message
 broker** (Redis Streams + Pub/Sub), **cache**, and **lock** store for every
-project on decalitro — `app_one`, `app_two`, and any number of future
-services.
+project — `app_one`, `app_two`, and any number of future services.
 
 Each service gets its **own ACL user**, locked to its **own key/channel
 prefix**. There is one shared keyspace; isolation is by **naming convention +
 ACL**, not by database (Valkey's numbered DBs do *not* isolate — see below).
 
-## Where it runs — `decalitro`
+## Where it runs
+
+Host-agnostic — deploy on whichever box you like. Where it runs, what it binds
+to, and which port it publishes are all set in `.env`; nothing is baked into the
+repo.
 
 | | |
 |--|--|
-| **Host** | `decalitro` |
-| **the private overlay IP** | `172.25.3.220` (interface `ztbtowjpcj`) |
-| **Endpoint** | `172.25.3.220:46004` (published port `46004` → container `6379`) |
-| **Repo path on host** | `~/docker/decalitro-valkey` |
-| **SSH** | `ssh decalitro` |
+| **Endpoint** | `<VK_BIND>:<VK_EXT_PORT>` (published port → container `6379`) |
+| **Bind** | `VK_BIND` — the interface the published port binds to |
+| **Default port** | `46004` (`VK_EXT_PORT`) |
 
-Bound to the the private overlay IP (`VK_BIND=172.25.3.220`), reachable by any stack on the
-overlay; **not** exposed on the public NIC (`176.123.2.138`). Auth is enforced
-by ACL passwords.
+Below, the deployed endpoint is written `<infra-host>:46004` — substitute your
+`VK_BIND:VK_EXT_PORT`.
+
+Bind to a **private overlay** IP (these stacks use the private overlay) so the project
+stacks reach it over the private network — **never** a public NIC. Auth is
+enforced by ACL passwords.
 
 ```
-  app_one  ─┐                         ┌────────────────────────────────────┐
-  app_two ─┤── :46004 (the private overlay) ──▶ │  decalitro-valkey                   │
-  (future) …   ─┘   AUTH <user> <pw>      │   user app_one → ~app_one:* │
-                                          │   user app_two → ~app_two:*│
-                                          │   (one shared keyspace, ACL-scoped) │
-                                          └────────────────────────────────────┘
+  app_one  ─┐                          ┌────────────────────────────────────┐
+  app_two ─┤── :46004 (overlay) ────▶ │  valkey                             │
+  (future) …   ─┘   AUTH <user> <pw>       │   user app_one → ~app_one:* │
+                                           │   user app_two → ~app_two:*│
+                                           │   (one shared keyspace, ACL-scoped) │
+                                           └────────────────────────────────────┘
 ```
 
 ---
@@ -132,9 +136,9 @@ On boot, `valkey/entrypoint.sh` builds the ACL file from `VK_TENANTS`. Verify:
 ```bash
 source .env
 # admin:
-valkey-cli -h 172.25.3.220 -p "$VK_EXT_PORT" --no-auth-warning -a "$VK_ADMIN_PASSWORD" ACL LIST
+valkey-cli -h 127.0.0.1 -p "$VK_EXT_PORT" --no-auth-warning -a "$VK_ADMIN_PASSWORD" ACL LIST
 # a tenant (note username + password):
-valkey-cli -h 172.25.3.220 -p "$VK_EXT_PORT" --user app_one --pass '<app_one pw>' --no-auth-warning PING
+valkey-cli -h 127.0.0.1 -p "$VK_EXT_PORT" --user app_one --pass '<app_one pw>' --no-auth-warning PING
 ```
 
 ---
@@ -145,7 +149,7 @@ valkey-cli -h 172.25.3.220 -p "$VK_EXT_PORT" --user app_one --pass '<app_one pw>
 |-----|---------|
 | `VK_ADMIN_PASSWORD` | Password for the `default` (admin) ACL user. Healthcheck + ops. |
 | `VK_EXT_PORT` | External port (default `46004`) → container `6379`. |
-| `VK_BIND` | Interface the published port binds to. `127.0.0.1` default; **`172.25.3.220`** on decalitro. Never public. |
+| `VK_BIND` | Interface the published port binds to. `127.0.0.1` default; **the host's private-overlay IP** in production. Never public. |
 | `VK_MEM_LIMIT` / `VK_MAXMEMORY` / `VK_CPUS` | Container caps. `VK_MAXMEMORY` (e.g. `768mb`) must stay below `VK_MEM_LIMIT`. |
 | `VK_TENANTS` | Space-separated `name:password` pairs — one per service. `name` = ACL user = key/channel prefix. |
 
@@ -153,7 +157,7 @@ valkey-cli -h 172.25.3.220 -p "$VK_EXT_PORT" --user app_one --pass '<app_one pw>
 
 - Only the Valkey port is published — one port, bound to `VK_BIND`.
 - `protected-mode no` inside the container is safe: the sole reachable surface
-  is the published port (the private overlay-bound) and every user needs an ACL password.
+  is the published port (overlay-bound) and every user needs an ACL password.
 - Each tenant user has `+@all -@dangerous`, so no `FLUSHALL`/`FLUSHDB`/`CONFIG`/
   `SHUTDOWN` — important since all tenants share one keyspace.
 
@@ -165,16 +169,17 @@ Use the **tenant** credentials (username + password), and prefix all keys.
 
 **app_one** — its `redis` client URL takes an ACL username:
 ```dotenv
-REDIS_HOST="172.25.3.220"
+REDIS_HOST="<infra-host>"          # the VK_BIND IP of wherever this runs
 REDIS_PORT="46004"
 REDIS_USER="app_one"
 REDIS_PASSWORD="<app_one password from VK_TENANTS>"
-# URL form: redis://app_one:<pw>@172.25.3.220:46004
+# URL form: redis://app_one:<pw>@<infra-host>:46004
 ```
 Then rename its keys/streams/channels per the migration map above, and drop the
 `redis` service from app_one's own compose once it points here.
 
-> A stack running **on decalitro itself** can use `172.25.3.220:46004` directly.
+> A stack running **on the same host** as this server can use the same
+> `<infra-host>:46004` endpoint directly.
 
 ---
 
@@ -205,6 +210,6 @@ docker compose down && sudo rm -rf valkey_data   # full wipe
 
 # memory / keyspace:
 source .env
-valkey-cli -h 172.25.3.220 -p "$VK_EXT_PORT" --no-auth-warning -a "$VK_ADMIN_PASSWORD" INFO memory
-valkey-cli -h 172.25.3.220 -p "$VK_EXT_PORT" --no-auth-warning -a "$VK_ADMIN_PASSWORD" --scan --pattern 'app_one:*' | head
+valkey-cli -h 127.0.0.1 -p "$VK_EXT_PORT" --no-auth-warning -a "$VK_ADMIN_PASSWORD" INFO memory
+valkey-cli -h 127.0.0.1 -p "$VK_EXT_PORT" --no-auth-warning -a "$VK_ADMIN_PASSWORD" --scan --pattern 'app_one:*' | head
 ```

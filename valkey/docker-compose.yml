@@ -1,9 +1,9 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Shared Valkey broker — decalitro
+# Shared Valkey broker
 #
 # A single Valkey (Redis fork) server acting as the central message broker /
-# cache / lock store for every project on the decalitro stack (app_one,
-# app_two, … any number of services).
+# cache / lock store for every project stack (app_one, app_two, … any
+# number of services).
 #
 # Valkey has no real multi-database isolation (numbered DBs share ACLs and
 # pub/sub), so tenancy is enforced by KEY/CHANNEL PREFIX + ACL: each service
@@ -14,11 +14,11 @@
 # ACL users are generated on every boot from VK_TENANTS in .env by
 # ./valkey/entrypoint.sh (written to an --aclfile). .env is the source of truth.
 # ─────────────────────────────────────────────────────────────────────────────
-name: decalitro-valkey
+name: frdcmp-valkey
 
 services:
   valkey:
-    container_name: decalitro-valkey
+    container_name: frdcmp-valkey
     image: valkey/valkey:8-alpine
     restart: unless-stopped
     environment:
@@ -30,11 +30,11 @@ services:
       # maxmemory cap, passed to valkey-server. Keep below mem_limit.
       - VK_MAXMEMORY=${VK_MAXMEMORY:-768mb}
     # entrypoint.sh builds the ACL file from VK_TENANTS, then execs valkey-server.
-    entrypoint: ["/bin/sh", "/decalitro-entrypoint.sh"]
+    entrypoint: ["/bin/sh", "/entrypoint.sh"]
     volumes:
       - ./valkey_data:/data
       - ./valkey/valkey.conf:/etc/valkey/valkey.conf:ro
-      - ./valkey/entrypoint.sh:/decalitro-entrypoint.sh:ro
+      - ./valkey/entrypoint.sh:/entrypoint.sh:ro
     ulimits:
       nofile:
         soft: 65536
@@ -53,9 +53,9 @@ services:
     networks:
       - network
     # Publish ONLY the Valkey port, on a single high port, bound to VK_BIND.
-    # Default 127.0.0.1 (localhost-only). On decalitro set VK_BIND=172.25.3.220
-    # (its the private overlay IP) so project workers reach it over the overlay.
-    # NEVER bind to the public NIC (176.123.2.138). Auth is enforced by ACL.
+    # Default 127.0.0.1 (localhost-only). In production set VK_BIND to the host's
+    # private-overlay IP (e.g. the private overlay) so project workers reach it over the
+    # overlay. NEVER bind to a public NIC. Auth is enforced by ACL.
     ports:
       - "${VK_BIND:-127.0.0.1}:${VK_EXT_PORT:-46004}:6379"
 

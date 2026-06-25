@@ -2,7 +2,7 @@
 # Intentionally SEPARATE from any app's docker-compose so it survives app
 # rebuilds/downs and can monitor many services at once. Deploy on whichever host
 # you like; set GRAFANA_ROOT_URL / ports in .env (see .env.example).
-# Scrapes each backend's /metrics over the private overlay (172.25.x) — see prometheus/prometheus.yml.
+# Scrapes each backend's /metrics over the private overlay — see prometheus/prometheus.yml.
 services:
   prometheus:
     image: prom/prometheus:latest

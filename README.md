@@ -26,15 +26,15 @@ not baked into the repo. Record your actual layout here.
 
 | Service | Host | Bind interface | Endpoint | `.env` knobs |
 |---------|------|----------------|----------|--------------|
-| clickhouse | _e.g. decalitro_ | _the private overlay IP_ | `http://<ip>:46003` | `CLICKHOUSE_BIND`, `CLICKHOUSE_EXT_PORT` |
-| valkey | _e.g. decalitro_ | _the private overlay IP_ | `<ip>:46004` | `VK_BIND`, `VK_EXT_PORT` |
-| monitoring | _e.g. <node>_ | _host_ | Grafana `http://<ip>:3001`, Prom `:9090` | `GRAFANA_ROOT_URL`, `*_EXT_PORT` |
+| clickhouse | _your host_ | _overlay IP_ | `http://<ip>:46003` | `CLICKHOUSE_BIND`, `CLICKHOUSE_EXT_PORT` |
+| valkey | _your host_ | _overlay IP_ | `<ip>:46004` | `VK_BIND`, `VK_EXT_PORT` |
+| monitoring | _your host_ | _host_ | Grafana `http://<ip>:3001`, Prom `:9090` | `GRAFANA_ROOT_URL`, `*_EXT_PORT` |
 
 **Networking & security model (shared by all three):**
 
 - Each service publishes **one** port, bound to whatever interface you set
-  (`*_BIND`). Put them on a **private overlay** (the stacks here use the private overlay,
-  `172.25.x`) and **never** bind to a public NIC.
+  (`*_BIND`). Put them on a **private overlay** (the stacks here use the private overlay)
+  and **never** bind to a public NIC.
 - Auth is always on: ClickHouse per-tenant users, Valkey per-tenant ACL
   passwords, Grafana admin login. The native/internal protocols (ClickHouse
   TCP `9000`) stay inside the container network.
@@ -72,7 +72,7 @@ services** so it stops running its own. Example for `app_one`
 
 ```dotenv
 # ── ClickHouse (logging) ──────────────────────────────────────────────
-CLICKHOUSE_HOST="172.25.3.220"
+CLICKHOUSE_HOST="<infra-host>"
 CLICKHOUSE_PORT="46003"            # main API
 CLICKHOUSE_HTTP_PORT="46003"       # log_worker (app_one reads a separate var)
 CLICKHOUSE_DB="app_one"
@@ -80,11 +80,11 @@ CLICKHOUSE_USER="app_one"
 CLICKHOUSE_PASSWORD="<from CH_TENANTS>"
 
 # ── Valkey (broker / cache / locks) ───────────────────────────────────
-REDIS_HOST="172.25.3.220"
+REDIS_HOST="<infra-host>"
 REDIS_PORT="46004"
 REDIS_USER="app_one"           # ACL username == key prefix
 REDIS_PASSWORD="<from VK_TENANTS>"
-# url form: redis://app_one:<pw>@172.25.3.220:46004
+# url form: redis://app_one:<pw>@<infra-host>:46004
 # all keys/streams/channels MUST start with  app_one:
 
 # ── Metrics (scraped, not pushed) ─────────────────────────────────────
