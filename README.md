@@ -128,24 +128,18 @@ TELEMETRY_API_KEY="ik_…"                                     # one key → one
 ```
 
 **Onboarding a project for logging** (no Valkey tenant needed — the gateway is
-the only Valkey client):
+the only Valkey client): mint a key, set two env vars, POST events.
 
-1. **Mint a key** (maps the key → tenant; the tenant's `events` table is created
-   automatically on first insert):
-   ```bash
-   curl -s -X POST http://127.0.0.1:46005/v1/admin/keys \
-     -H "x-admin-token: $INGEST_ADMIN_TOKEN" \
-     -H 'content-type: application/json' \
-     -d '{"tenant":"app_three","label":"app-three prod"}'
-   # → {"id":"…","tenant":"app_three","key":"ik_…"}   ← shown once, store it
-   ```
-2. *(optional)* add the tenant to `CH_TENANTS` if you want a restricted
-   ClickHouse **user** for per-project Grafana queries (the gateway writes as
-   admin regardless).
+```bash
+curl -s -X POST http://172.25.125.233:46005/v1/admin/keys \
+  -H "x-admin-token: $INGEST_ADMIN_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"tenant":"app_three","label":"app-three prod"}'
+# → {"id":"…","tenant":"app_three","key":"ik_…"}   ← shown once, store it
+```
 
-Admin endpoints (guarded by `INGEST_ADMIN_TOKEN`): `POST /v1/admin/keys`
-(mint), `GET /v1/admin/keys` (list, no plaintext), `DELETE /v1/admin/keys/{id}`
-(revoke — effective within ~60s, the lookup cache TTL).
+📖 **Full guide — HTTP API, event schema, key management, retention,
+integration, ops & troubleshooting: [ingest-api/README.md](ingest-api/README.md).**
 
 ---
 
