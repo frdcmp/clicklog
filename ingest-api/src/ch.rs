@@ -145,7 +145,9 @@ CREATE TABLE IF NOT EXISTS events (
 ) ENGINE = MergeTree
 PARTITION BY toYYYYMM(ts)
 ORDER BY (category, event_type, ts)
-TTL toDateTime(ts) + INTERVAL 180 DAY DELETE
+-- Tiered retention: noisy HTTP access logs expire fast (30d); semantic domain
+-- events + forwarded errors/warns are kept longer (90d) for audit/debugging.
+TTL toDateTime(ts) + toIntervalDay(if(category = 'http', 30, 90)) DELETE
 "#;
 
 /// Control-plane table for API keys. Lives in the `ingest` database. Keys are
