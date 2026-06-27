@@ -108,6 +108,47 @@ add-a-tenant-live commands when the stack is already running.
 
 ---
 
+## Logging via the ingest API (recommended)
+
+The direct-Valkey/ClickHouse wiring above couples each app repo to the infra
+(it needs the `redis` + ClickHouse clients, a `logs-worker`, and tenant
+credentials). For **logging**, prefer the `ingest-api` gateway instead: apps
+hold **only an API key + a URL** and POST event batches. The queue and the
+drain-to-ClickHouse worker live here, so app repos stay clean and publishable.
+
+```
+app ──POST /v1/events (Bearer <key>)──▶ ingest-api ──▶ Valkey ingest:events ──▶ (drain) ──▶ ClickHouse <tenant>.events
+```
+
+The app config is just:
+
+```dotenv
+TELEMETRY_INGEST_URL="http://<infra-host>:46005/v1/events"   # or ingest-api:8080 on-host
+TELEMETRY_API_KEY="ik_…"                                     # one key → one tenant
+```
+
+**Onboarding a project for logging** (no Valkey tenant needed — the gateway is
+the only Valkey client):
+
+1. **Mint a key** (maps the key → tenant; the tenant's `events` table is created
+   automatically on first insert):
+   ```bash
+   curl -s -X POST http://127.0.0.1:46005/v1/admin/keys \
+     -H "x-admin-token: $INGEST_ADMIN_TOKEN" \
+     -H 'content-type: application/json' \
+     -d '{"tenant":"app_three","label":"app-three prod"}'
+   # → {"id":"…","tenant":"app_three","key":"ik_…"}   ← shown once, store it
+   ```
+2. *(optional)* add the tenant to `CH_TENANTS` if you want a restricted
+   ClickHouse **user** for per-project Grafana queries (the gateway writes as
+   admin regardless).
+
+Admin endpoints (guarded by `INGEST_ADMIN_TOKEN`): `POST /v1/admin/keys`
+(mint), `GET /v1/admin/keys` (list, no plaintext), `DELETE /v1/admin/keys/{id}`
+(revoke — effective within ~60s, the lookup cache TTL).
+
+---
+
 ## Quick start
 
 The whole stack comes up from one compose file at the repo root:

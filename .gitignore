@@ -7,6 +7,9 @@
 **/clickhouse_logs/
 **/valkey_data/
 
+# Rust build artifacts (ingest-api)
+**/target/
+
 # Editor / OS noise
 *.bak
 .DS_Store

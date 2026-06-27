@@ -121,6 +121,48 @@ services:
     ports:
       - "${VK_BIND:-127.0.0.1}:${VK_EXT_PORT:-46004}:6379"
 
+  # ── Ingest API (telemetry gateway) ───────────────────────────────────────────
+  # Apps POST batches of events here with an API key (one key → one tenant). The
+  # service buffers them on the internal Valkey `ingest:events` stream and a
+  # background task drains them into each tenant's ClickHouse `events` table.
+  # ClickHouse/Valkey credentials never leave this host — apps only hold a key.
+  # API keys live in the `ingest.ingest_keys` ClickHouse table; mint/list/revoke
+  # via the admin endpoints (guarded by INGEST_ADMIN_TOKEN). See README.
+  ingest-api:
+    container_name: frdcmp-ingest-api
+    build: ./ingest-api
+    restart: unless-stopped
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    environment:
+      # Co-located stores, reached by service name on the internal network.
+      - CLICKHOUSE_URL=http://clickhouse:8123
+      - CLICKHOUSE_ADMIN_USER=${CLICKHOUSE_ADMIN_USER}
+      - CLICKHOUSE_ADMIN_PASSWORD=${CLICKHOUSE_ADMIN_PASSWORD}
+      # `default` ACL user (full access) — only the ingest service touches Valkey.
+      # NOTE: VK_ADMIN_PASSWORD must be URL-safe (no @ : / # in it).
+      - REDIS_URL=redis://default:${VK_ADMIN_PASSWORD}@valkey:6379
+      # Bearer token guarding the /v1/admin/keys endpoints. Empty = admin disabled.
+      - INGEST_ADMIN_TOKEN=${INGEST_ADMIN_TOKEN}
+      - RUST_LOG=${INGEST_RUST_LOG:-info}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - frdcmp
+    # Publish the ingest port, bound to INGEST_BIND. Default 127.0.0.1. In
+    # production set INGEST_BIND to the host's private-overlay IP so apps on
+    # OTHER hosts can POST events; apps ON this host can use ingest-api:8080.
+    # NEVER bind to a public NIC unless fronted by TLS — auth is the API key.
+    ports:
+      - "${INGEST_BIND:-127.0.0.1}:${INGEST_EXT_PORT:-46005}:8080"
+
   # ── Prometheus (metrics scraper) ─────────────────────────────────────────────
   # Scrapes each backend's /metrics over the private overlay — see
   # ./monitoring/prometheus/prometheus.yml.

@@ -1,0 +1,29 @@
+[package]
+name = "ingest-api"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+
+[[bin]]
+name = "ingest-api"
+path = "src/main.rs"
+
+[dependencies]
+actix-web = "4.3"
+tokio = { version = "1", features = ["full"] }
+# HTTP-only client to the co-located ClickHouse (clickhouse:8123). No TLS feature
+# pulled in — keeps the build free of OpenSSL system deps.
+reqwest = { version = "0.11", default-features = false, features = ["json"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+moka = { version = "0.12", features = ["future"] }
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["clock"] }
+log = "0.4"
+env_logger = "0.10"
+dotenv = "0.15"
+urlencoding = "2.1"
