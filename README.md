@@ -146,6 +146,33 @@ curl -s -X POST http://172.25.125.233:46005/v1/admin/keys \
 📖 **Full guide — HTTP API, event schema, key management, retention,
 integration, ops & troubleshooting: [ingest-api/README.md](ingest-api/README.md).**
 
+### Client side — just POST, do NOT add your own queue
+
+The durable buffer lives **here**, in the gateway: each POST is written to the
+gateway's Valkey stream (5M cap, survives a ClickHouse outage) and drained to
+ClickHouse in the background. So an app must **not** stand up its own Redis queue
++ worker for logs — that just queues the same events twice:
+
+```
+✅ app ─POST─▶ ingest-api ─▶ Valkey ─▶ drain ─▶ ClickHouse        (one queue, here)
+❌ app ─▶ app's Redis ─▶ app worker ─POST─▶ ingest-api ─▶ Valkey…  (two queues, redundant)
+```
+
+Do this in the app, smallest first:
+
+- **Minimum:** fire-and-forget `POST /v1/events` with a batch, short timeout,
+  drop on failure. No Redis, no worker.
+- **Recommended:** an in-**memory** bounded buffer + one background task that
+  flushes every ~1s or ~500 events as a single POST (≤ 1000/batch). Non-blocking
+  on the request path; at most ~1s of in-flight logs lost if the process dies —
+  fine for telemetry.
+
+An app-side **durable** (Redis) queue is only warranted if losing a few seconds
+of logs during a gateway/network blip is unacceptable — rare for telemetry, and
+the right fix then is gateway HA, not a queue in every app. (Apps still use the
+shared Valkey for their *real* broker/cache/lock needs — that's separate from
+logging.)
+
 ### The event standard (enforced — no fallback)
 
 Every event is validated against this schema **before** it is buffered. Any
