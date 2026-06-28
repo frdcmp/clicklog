@@ -4,19 +4,24 @@ use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use redis::aio::ConnectionManager;
 use serde::Deserialize;
 
+use crate::ch::Ch;
 use crate::drain::STREAM;
 use crate::keys::KeyStore;
+use crate::schema::validate_event;
 
 /// Max events accepted in a single request (producers should batch ≤ this).
 const MAX_BATCH: usize = 1000;
 /// Approximate stream cap so a ClickHouse outage drops oldest, not grows forever.
 const STREAM_MAXLEN: usize = 5_000_000;
+/// Cap how many per-event validation errors we echo back in one response.
+const MAX_REPORTED_ERRORS: usize = 20;
 
 #[derive(Clone)]
 pub struct State {
     pub keys: KeyStore,
     pub valkey: ConnectionManager,
     pub admin_token: String,
+    pub ch: Ch,
 }
 
 pub async fn health() -> impl Responder {
@@ -25,7 +30,7 @@ pub async fn health() -> impl Responder {
 
 // ── ingest ────────────────────────────────────────────────────────────────────
 
-fn bearer_or_apikey(req: &HttpRequest) -> Option<String> {
+pub(crate) fn bearer_or_apikey(req: &HttpRequest) -> Option<String> {
     if let Some(v) = req.headers().get("x-api-key").and_then(|v| v.to_str().ok()) {
         if !v.is_empty() {
             return Some(v.to_string());
@@ -37,31 +42,36 @@ fn bearer_or_apikey(req: &HttpRequest) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
-/// Parse a request body into a list of compact JSON event strings. Accepts a
-/// JSON array, a single JSON object, or newline-delimited JSON.
-fn parse_events(body: &str) -> Vec<String> {
+/// Parse a request body into a list of JSON values. Accepts a JSON array, a
+/// single JSON object, or newline-delimited JSON. Strict: a malformed body is an
+/// error, not a silently-dropped line (no fallback).
+fn parse_events(body: &str) -> Result<Vec<serde_json::Value>, String> {
     let body = body.trim();
     if body.is_empty() {
-        return Vec::new();
+        return Err("empty body".to_string());
     }
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
-        return match v {
-            serde_json::Value::Array(items) => items
-                .into_iter()
-                .filter(|i| i.is_object())
-                .map(|i| i.to_string())
-                .collect(),
-            serde_json::Value::Object(_) => vec![v.to_string()],
-            _ => Vec::new(),
-        };
+    // Try a single JSON document first (array or object).
+    match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(serde_json::Value::Array(items)) => return Ok(items),
+        Ok(v @ serde_json::Value::Object(_)) => return Ok(vec![v]),
+        Ok(_) => return Err("body must be a JSON object or an array of objects".to_string()),
+        Err(_) => {} // fall through to NDJSON
     }
-    // Fall back to NDJSON.
-    body.lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-        .filter(|v| v.is_object())
-        .map(|v| v.to_string())
-        .collect()
+    // NDJSON: every non-blank line must be valid JSON.
+    let mut out = Vec::new();
+    for (i, line) in body.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(v) => out.push(v),
+            Err(e) => return Err(format!("line {}: invalid JSON: {e}", i + 1)),
+        }
+    }
+    if out.is_empty() {
+        return Err("no events".to_string());
+    }
+    Ok(out)
 }
 
 pub async fn ingest(
@@ -82,15 +92,40 @@ pub async fn ingest(
             return HttpResponse::BadRequest().json(serde_json::json!({ "error": "body not utf-8" }))
         }
     };
-    let events = parse_events(body);
-    if events.is_empty() {
+    let values = match parse_events(body) {
+        Ok(v) => v,
+        Err(e) => return HttpResponse::BadRequest().json(serde_json::json!({ "error": e })),
+    };
+    if values.is_empty() {
         return HttpResponse::BadRequest().json(serde_json::json!({ "error": "no events" }));
     }
-    if events.len() > MAX_BATCH {
+    if values.len() > MAX_BATCH {
         return HttpResponse::PayloadTooLarge()
             .json(serde_json::json!({ "error": "too many events", "max": MAX_BATCH }));
     }
 
+    // Enforce the event standard. ANY violation rejects the WHOLE batch — there
+    // is no partial accept and no skip-unknown fallback. Errors are returned
+    // synchronously so producers learn immediately what is off-standard.
+    let mut details = Vec::new();
+    for (i, v) in values.iter().enumerate() {
+        let errs = validate_event(v);
+        if !errs.is_empty() {
+            if details.len() < MAX_REPORTED_ERRORS {
+                details.push(serde_json::json!({ "index": i, "errors": errs }));
+            }
+        }
+    }
+    if !details.is_empty() {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "validation failed — batch rejected",
+            "rejected": values.len(),
+            "details": details,
+            "truncated": details.len() >= MAX_REPORTED_ERRORS,
+        }));
+    }
+
+    let events: Vec<String> = values.iter().map(|v| v.to_string()).collect();
     let mut cm = state.valkey.clone();
     let mut pipe = redis::pipe();
     for ev in &events {

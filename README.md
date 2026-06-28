@@ -8,9 +8,18 @@ to them live in one place:
 
 | Service | Role | Container port | Default host port | Docs |
 |---------|------|----------------|-------------------|------|
-| `clickhouse` | Centralised **logging** store — one database + restricted user per project | `8123` (HTTP) | `46003` | [README](clickhouse/README.md) |
+| `clickhouse` | Centralised **logging** store — one database per project | `8123` (HTTP) | **none (internal-only)** | [README](clickhouse/README.md) |
 | `valkey` | Shared **broker / cache / locks** (Redis Streams + Pub/Sub) — one ACL user + key prefix per service | `6379` | `46004` | [README](valkey/README.md) |
-| `prometheus` + `grafana` | **Observability** — Prometheus scrape + Grafana dashboards | `9090` / `3000` | `9090` / `3001` | [README](monitoring/README.md) |
+| `ingest-api` | **The only way to write logs** — gateway that validates events against the standard and drains them to ClickHouse | `8080` | `46005` | (this README) |
+
+> **Logging is gateway-only.** ClickHouse no longer publishes a host port — it is
+> reachable only on the internal `frdcmp` network, in practice only by
+> `ingest-api`. Apps **cannot** write to ClickHouse directly; all event data must
+> go through `POST /v1/events`, which enforces the event standard and rejects
+> anything off-spec. There is no fallback.
+>
+> **Monitoring (Prometheus + Grafana) was removed for now** — config is kept
+> under `./monitoring/` and can be restored from this file's git history.
 
 All four services run from **one combined Docker Compose stack** at the repo
 root (`docker-compose.yml` + `.env`), sharing a single `frdcmp` bridge network.
@@ -68,20 +77,18 @@ string everywhere — database name, ACL user, key prefix. Keep it consistent.
 
 ## How an app stack connects to all three
 
-Point the stack's env at the endpoints, use **tenant** credentials (never the
-admin ones), and once it's wired up, **drop that repo's own clickhouse/redis
-services** so it stops running its own. Example for `app_one`
-(substitute your deployment's IPs/ports and the passwords from each
-`*_TENANTS`):
+**Logging goes through the ingest-api gateway only** — apps no longer get
+ClickHouse credentials (the port is closed). For **broker / cache / locks** apps
+still connect to Valkey directly with **tenant** credentials (never admin ones).
+Once wired up, **drop that repo's own clickhouse/redis services**. Example for
+`app_one` (substitute your deployment's IPs/ports and the passwords from
+`VK_TENANTS`):
 
 ```dotenv
-# ── ClickHouse (logging) ──────────────────────────────────────────────
-CLICKHOUSE_HOST="<infra-host>"
-CLICKHOUSE_PORT="46003"            # main API
-CLICKHOUSE_HTTP_PORT="46003"       # log_worker (app_one reads a separate var)
-CLICKHOUSE_DB="app_one"
-CLICKHOUSE_USER="app_one"
-CLICKHOUSE_PASSWORD="<from CH_TENANTS>"
+# ── Logging → ingest-api gateway (NOT direct ClickHouse) ──────────────
+TELEMETRY_INGEST_URL="http://<infra-host>:46005/v1/events"
+TELEMETRY_API_KEY="ik_…"           # one key → one tenant; mint via admin endpoint
+# Events MUST conform to the standard schema below or they are rejected (400).
 
 # ── Valkey (broker / cache / locks) ───────────────────────────────────
 REDIS_HOST="<infra-host>"
@@ -90,20 +97,18 @@ REDIS_USER="app_one"           # ACL username == key prefix
 REDIS_PASSWORD="<from VK_TENANTS>"
 # url form: redis://app_one:<pw>@<infra-host>:46004
 # all keys/streams/channels MUST start with  app_one:
-
-# ── Metrics (scraped, not pushed) ─────────────────────────────────────
-# Expose /metrics on your API; add the target to monitoring/prometheus/prometheus.yml.
 ```
 
-Onboarding a new project = add a tenant to **both** stores + a scrape target:
+Onboarding a new project:
 
-1. **ClickHouse** — add a `db:user:password` triple to `CH_TENANTS`.
-2. **Valkey** — add a `name:password` pair to `VK_TENANTS` (that `name` becomes
-   the mandatory key prefix).
-3. **Monitoring** — add the API's `/metrics` target to
-   [monitoring/prometheus/prometheus.yml](monitoring/prometheus/prometheus.yml).
+1. **Logging** — mint an ingest API key for the tenant (see below). The tenant's
+   ClickHouse database + `events` table are created automatically on first write.
+   No `CH_TENANTS` entry is needed unless you want a restricted **read** user for
+   ad-hoc queries (the gateway writes as admin internally).
+2. **Valkey** (only if the app needs broker/cache/locks) — add a `name:password`
+   pair to `VK_TENANTS` (that `name` becomes the mandatory key prefix).
 
-(Use the **same** project name in all three.) See each service's README for the
+(Use the **same** project name everywhere.) See each service's README for the
 add-a-tenant-live commands when the stack is already running.
 
 ---
@@ -140,6 +145,56 @@ curl -s -X POST http://172.25.125.233:46005/v1/admin/keys \
 
 📖 **Full guide — HTTP API, event schema, key management, retention,
 integration, ops & troubleshooting: [ingest-api/README.md](ingest-api/README.md).**
+
+### The event standard (enforced — no fallback)
+
+Every event is validated against this schema **before** it is buffered. Any
+violation rejects the **whole batch** with `400` and a per-event error list;
+nothing off-spec ever reaches ClickHouse. The contract lives in
+[`ingest-api/src/schema.rs`](ingest-api/src/schema.rs) and mirrors the `events`
+table in [`ingest-api/src/ch.rs`](ingest-api/src/ch.rs).
+
+- **Required** (non-empty strings): `category`, `event_type`.
+- **No unknown fields.** Anything not in the standard is rejected — put custom
+  data inside the `attributes` field (a JSON **string**).
+- **String fields:** `source`, `category`, `event_type`, `severity`, `user_id`,
+  `user_email`, `session_id`, `request_id`, `entity_type`, `entity_id`,
+  `message`, `error_code`, `model`, `route`, `app_version`, `server`, `ip`,
+  `user_agent`, `attributes`.
+- **`severity`** ∈ `debug | info | warn | error`.
+- **`event_id`** (optional): must be a UUID string.
+- **Integer fields** (non-negative, in range): `tokens_input`, `tokens_output`,
+  `duration_ms` (UInt32), `http_status` (UInt16).
+- **Timestamps** `ts`, `received_at` (optional): RFC3339 string or epoch number.
+
+Body may be a JSON object, an array of objects, or NDJSON (≤ 1000 events/batch).
+Example valid event:
+
+```json
+{"category":"http","event_type":"GET","severity":"info","route":"/widgets/summary","http_status":200,"duration_ms":12,"attributes":"{\"region\":\"eu\"}"}
+```
+
+### Reading events back
+
+The **same API key** that writes also reads — one key per project, full
+read+write, scoped to that project's own `events`. Apps just hold a URL + key.
+Callers never send SQL; they pass structured params, the gateway builds
+parameter-bound, read-only ClickHouse queries from a fixed column allowlist.
+
+| Endpoint | Purpose |
+|----------|---------|
+| `GET /v1/events` | Search/list. Params: `from`,`to` (`-1h`/`-7d`/RFC3339, default last 1h → now), `category`/`event_type`/`severity`/`source`/`model`/`user_id`/… (exact, comma = OR), `http_status`, `q` (substring on `message`), `order` (`asc`/`desc`), `limit` (≤1000), `cursor`. Returns `{events, next_cursor}`. |
+| `GET /v1/events/{event_id}` | Fetch one event by UUID. |
+| `GET /v1/stats` | Aggregates. Params: `group_by` (`category`/`event_type`/`severity`/`source`/`model`/`http_status`/…), `interval` (`1m`/`5m`/`1h`/`1d` → timeseries; omit → totals), `metric` (`count`, `sum:tokens_input`, `avg:duration_ms`, …), + same filters. |
+
+```bash
+# last 24h of warnings on http routes
+curl -H "x-api-key: ik_…" "$URL/v1/events?from=-24h&category=http&severity=warn&limit=50"
+# requests per hour, last day
+curl -H "x-api-key: ik_…" "$URL/v1/stats?from=-24h&group_by=event_type&interval=1h"
+# LLM input tokens by model
+curl -H "x-api-key: ik_…" "$URL/v1/stats?from=-30d&group_by=model&metric=sum:tokens_input"
+```
 
 ---
 

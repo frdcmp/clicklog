@@ -82,7 +82,7 @@ impl KeyStore {
         let id = uuid::Uuid::new_v4().to_string();
         let version = now_millis();
         let sql = format!(
-            "INSERT INTO ingest.ingest_keys (id, key_hash, tenant, label, scopes, active, version) VALUES ('{}','{}','{}','{}','events:write',1,{})",
+            "INSERT INTO ingest.ingest_keys (id, key_hash, tenant, label, scopes, active, version) VALUES ('{}','{}','{}','{}','events:read,events:write',1,{})",
             esc(&id), esc(&hash), esc(tenant), esc(label), version
         );
         self.ch.execute(&sql).await?;
@@ -106,7 +106,7 @@ impl KeyStore {
         let label = row.get("label").and_then(|v| v.as_str()).unwrap_or("");
         let version = now_millis();
         let ins = format!(
-            "INSERT INTO ingest.ingest_keys (id, key_hash, tenant, label, scopes, active, version, revoked_at) VALUES ('{}','{}','{}','{}','events:write',0,{},now())",
+            "INSERT INTO ingest.ingest_keys (id, key_hash, tenant, label, scopes, active, version, revoked_at) VALUES ('{}','{}','{}','{}','events:read,events:write',0,{},now())",
             esc(id), esc(hash), esc(tenant), esc(label), version
         );
         self.ch.execute(&ins).await?;

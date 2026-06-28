@@ -9,6 +9,8 @@ mod ch;
 mod drain;
 mod handlers;
 mod keys;
+mod read;
+mod schema;
 
 use std::time::Duration;
 
@@ -58,6 +60,7 @@ async fn main() -> std::io::Result<()> {
         keys: KeyStore::new(ch.clone()),
         valkey: cm,
         admin_token: std::env::var("INGEST_ADMIN_TOKEN").unwrap_or_default(),
+        ch: ch.clone(),
     };
     if state.admin_token.is_empty() {
         log::warn!("INGEST_ADMIN_TOKEN is empty — admin key endpoints are disabled");
@@ -74,6 +77,10 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::PayloadConfig::new(8 * 1024 * 1024))
             .route("/health", web::get().to(handlers::health))
             .route("/v1/events", web::post().to(handlers::ingest))
+            // Read API (tenant-scoped, key → tenant; read + write share one key).
+            .route("/v1/events", web::get().to(read::list_events))
+            .route("/v1/events/{event_id}", web::get().to(read::get_event))
+            .route("/v1/stats", web::get().to(read::stats))
             .route("/v1/admin/keys", web::post().to(handlers::mint_key))
             .route("/v1/admin/keys", web::get().to(handlers::list_keys))
             .route("/v1/admin/keys/{id}", web::delete().to(handlers::revoke_key))

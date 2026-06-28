@@ -101,6 +101,36 @@ impl Ch {
         Ok(rows)
     }
 
+    /// Run a read-only SELECT with bound parameters (`{name:Type}` placeholders
+    /// + `param_name=` values), returning one parsed JSON object per row. The
+    /// request is forced read-only (`readonly=2`) and time-bounded so the read
+    /// API can never mutate data or wedge the server with a runaway scan. Caller
+    /// appends `FORMAT JSONEachRow` to `sql`.
+    pub async fn query_rows_params(
+        &self,
+        sql: &str,
+        params: &[(String, String)],
+    ) -> Result<Vec<serde_json::Value>, String> {
+        let mut url = format!("{}/?readonly=2&max_execution_time=15", self.base);
+        for (k, v) in params {
+            url.push_str(&format!("&param_{}={}", k, urlencoding::encode(v)));
+        }
+        let res = self
+            .client
+            .post(url)
+            .basic_auth(&self.user, Some(&self.pass))
+            .body(sql.to_string())
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        let body = self.check(res).await?;
+        let mut rows = Vec::new();
+        for line in body.lines().filter(|l| !l.trim().is_empty()) {
+            rows.push(serde_json::from_str(line).map_err(|e| e.to_string())?);
+        }
+        Ok(rows)
+    }
+
     async fn check(&self, res: reqwest::Response) -> Result<String, String> {
         let status = res.status();
         let body = res.text().await.unwrap_or_default();

@@ -65,14 +65,11 @@ services:
       start_period: 30s
     networks:
       - frdcmp
-    # Expose ONLY the HTTP port (8123), on a single high port, bound to
-    # CLICKHOUSE_BIND. Default 127.0.0.1 (localhost-only, safe). In production set
-    # CLICKHOUSE_BIND to the host's private-overlay IP (e.g. the private overlay) so project
-    # log workers on OTHER hosts can reach it. Stacks ON this host can instead use
-    # the internal name clickhouse:8123. NEVER bind to a public NIC. The native
-    # TCP protocol (9000) is intentionally kept internal-only.
-    ports:
-      - "${CLICKHOUSE_BIND:-127.0.0.1}:${CLICKHOUSE_EXT_PORT:-46003}:8123"
+    # NO published ports. ClickHouse is reachable ONLY on the internal `frdcmp`
+    # network — in practice only by `ingest-api` (clickhouse:8123). Direct writes
+    # from apps (on this or other hosts) are intentionally impossible: ALL event
+    # data must enter through the ingest-api gateway, which enforces the event
+    # standard. There is no direct-to-ClickHouse path and no fallback.
 
   # ── Shared Valkey broker ─────────────────────────────────────────────────────
   # One Valkey (Redis fork) server: central broker / cache / lock store. No real
@@ -163,54 +160,11 @@ services:
     ports:
       - "${INGEST_BIND:-127.0.0.1}:${INGEST_EXT_PORT:-46005}:8080"
 
-  # ── Prometheus (metrics scraper) ─────────────────────────────────────────────
-  # Scrapes each backend's /metrics over the private overlay — see
-  # ./monitoring/prometheus/prometheus.yml.
-  prometheus:
-    container_name: frdcmp-prometheus
-    image: prom/prometheus:latest
-    restart: unless-stopped
-    volumes:
-      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus_data:/prometheus
-    command:
-      - "--config.file=/etc/prometheus/prometheus.yml"
-      - "--storage.tsdb.path=/prometheus"
-      - "--storage.tsdb.retention.time=30d"
-      - "--storage.tsdb.retention.size=5GB"
-      - "--web.enable-lifecycle"
-    ports:
-      - "${PROMETHEUS_EXT_PORT:-9090}:9090"
-    networks:
-      - frdcmp
-
-  # ── Grafana (dashboards) ─────────────────────────────────────────────────────
-  # Reaches Prometheus by service-name alias (http://prometheus:9090) on the
-  # shared network — see ./monitoring/grafana/provisioning/datasources.
-  grafana:
-    container_name: frdcmp-grafana
-    image: grafana/grafana:latest
-    restart: unless-stopped
-    depends_on:
-      - prometheus
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-changeme}
-      - GF_USERS_ALLOW_SIGN_UP=false
-      # However this host is reached (set in .env). 3000 is often taken by a dev server.
-      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://127.0.0.1:3001}
-    volumes:
-      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
-      - grafana_data:/var/lib/grafana
-    ports:
-      - "${GRAFANA_EXT_PORT:-3001}:3000"
-    networks:
-      - frdcmp
-
-volumes:
-  prometheus_data:
-  grafana_data:
+  # ── Monitoring (Prometheus + Grafana) — REMOVED for now ──────────────────────
+  # The prometheus + grafana services were removed from this stack. Their config
+  # still lives under ./monitoring/ so they can be restored later. To bring them
+  # back, re-add the two service blocks and the `prometheus_data` / `grafana_data`
+  # named volumes (see git history of this file).
 
 networks:
   frdcmp:
