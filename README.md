@@ -65,9 +65,9 @@ string everywhere — database name, ACL user, key prefix. Keep it consistent.
 | | ClickHouse | Valkey |
 |--|-----------|--------|
 | Isolation unit | a **database** per project | a **key/channel prefix** per service (`<svc>:*`) |
-| Identity | a restricted **user** granted only its own DB | an **ACL user** locked to `~<svc>:* &<svc>:*` |
-| Configured via | `CH_TENANTS` = `db:user:password` triples | `VK_TENANTS` = `name:password` pairs |
-| Provisioned | init script on first boot (+ live `CREATE` to add later) | ACL file rebuilt from env on every boot |
+| Identity | an **ingest API key** per project (gateway writes as admin) | an **ACL user** locked to `~<svc>:* &<svc>:*` |
+| Configured via | a key minted into `ingest.ingest_keys` (see ingest-api) | `VK_TENANTS` = `name:password` pairs |
+| Provisioned | DB + `events` table auto-created by the gateway on first write | ACL file rebuilt from env on every boot |
 
 > Valkey numbered DBs do **not** isolate tenants (Pub/Sub is global, no per-DB
 > auth) — isolation is by prefix + ACL. See [valkey/README.md](valkey/README.md).
@@ -102,9 +102,8 @@ REDIS_PASSWORD="<from VK_TENANTS>"
 Onboarding a new project:
 
 1. **Logging** — mint an ingest API key for the tenant (see below). The tenant's
-   ClickHouse database + `events` table are created automatically on first write.
-   No `CH_TENANTS` entry is needed unless you want a restricted **read** user for
-   ad-hoc queries (the gateway writes as admin internally).
+   ClickHouse database + `events` table are created automatically on first write
+   (the gateway writes as admin internally). Nothing else to configure.
 2. **Valkey** (only if the app needs broker/cache/locks) — add a `name:password`
    pair to `VK_TENANTS` (that `name` becomes the mandatory key prefix).
 

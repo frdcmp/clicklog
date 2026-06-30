@@ -133,11 +133,8 @@ convention used elsewhere in this repo).
    # → {"id":"…","tenant":"<name>","key":"ik_…"}   ← store the key now, it is not recoverable
    ```
    The `<name>.events` table is created automatically on the first insert — no
-   manual DDL needed.
-
-2. **(optional)** add `<name>:<name>:<password>` to `CH_TENANTS` in `.env` if you
-   want a restricted ClickHouse **user** for per-project Grafana queries. The
-   gateway always writes as admin, so this is only for read isolation.
+   manual DDL needed. That's the only step — the gateway writes as admin, so the
+   tenant needs no ClickHouse user of its own.
 
 No Valkey tenant is needed — the gateway is the only Valkey writer.
 

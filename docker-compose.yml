@@ -22,20 +22,18 @@ name: frdcmp-infra
 services:
   # ── Centralised logging ClickHouse ──────────────────────────────────────────
   # One ClickHouse server holding log data for every project stack. Each project
-  # gets its OWN database + restricted user; tenants are provisioned on first
-  # boot from CH_TENANTS by ./clickhouse/clickhouse/init/01-init-tenants.sh.
+  # gets its OWN database + `events` table, created on demand by the ingest-api
+  # gateway (which writes as the admin user). Apps never connect to CH directly.
   clickhouse:
     container_name: frdcmp-clickhouse
     image: clickhouse/clickhouse-server:24
     restart: unless-stopped
     environment:
-      # Bootstrap admin user. The init script connects as this user to create
-      # the per-tenant databases/users, so it needs access management.
+      # Bootstrap admin user. The ingest-api gateway connects as this user to
+      # create each tenant's database + tables on demand.
       - CLICKHOUSE_USER=${CLICKHOUSE_ADMIN_USER}
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_ADMIN_PASSWORD}
       - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
-      # Consumed by the init script to provision tenants (db:user:password …).
-      - CH_TENANTS=${CH_TENANTS}
     ulimits:
       nofile:
         soft: 262144
@@ -55,8 +53,6 @@ services:
       # Standard config overrides (read-only).
       - ./clickhouse/clickhouse/config.d/low-resources.xml:/etc/clickhouse-server/config.d/low-resources.xml:ro
       - ./clickhouse/clickhouse/config.d/network-and-logging.xml:/etc/clickhouse-server/config.d/network-and-logging.xml:ro
-      # First-boot tenant provisioning.
-      - ./clickhouse/clickhouse/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "clickhouse-client", "--user", "${CLICKHOUSE_ADMIN_USER}", "--password", "${CLICKHOUSE_ADMIN_PASSWORD}", "--query", "SELECT 1"]
       interval: 15s

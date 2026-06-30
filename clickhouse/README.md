@@ -62,7 +62,6 @@ All paths below are relative to this `clickhouse/` folder (the compose file and
 | `../.env` / `../.env.example` | Secrets + config for the whole stack. `.env` is git-ignored. |
 | `clickhouse/config.d/low-resources.xml` | Memory caps (cgroup-aware, 0.8× of `mem_limit`). |
 | `clickhouse/config.d/network-and-logging.xml` | `listen_host`, log rotation, capped `system.*_log`. |
-| `clickhouse/init/01-init-tenants.sh` | First-boot provisioning of tenant DBs + users from `CH_TENANTS`. |
 | `clickhouse_data/` | Data directory (local volume, git-ignored). |
 | `clickhouse_logs/` | Server logs (local, git-ignored). |
 
@@ -78,8 +77,8 @@ docker compose up -d clickhouse
 docker compose logs -f clickhouse
 ```
 
-First boot runs `01-init-tenants.sh`, which creates one database + user per
-entry in `CH_TENANTS`. Verify:
+Tenant databases are created on demand by the ingest-api gateway on first write
+— there's no first-boot provisioning step. Verify the server is up:
 
 ```bash
 source .env
@@ -93,11 +92,10 @@ curl -s "http://127.0.0.1:${CLICKHOUSE_EXT_PORT}/?query=SHOW%20DATABASES" \
 
 | Var | Meaning |
 |-----|---------|
-| `CLICKHOUSE_ADMIN_USER` / `CLICKHOUSE_ADMIN_PASSWORD` | Bootstrap admin (access management). Used by the init script and healthcheck. |
+| `CLICKHOUSE_ADMIN_USER` / `CLICKHOUSE_ADMIN_PASSWORD` | Bootstrap admin (access management). Used by the ingest-api gateway and the healthcheck. |
 | `CLICKHOUSE_EXT_PORT` | External HTTP port (a single random high port; default `46003`). Maps to container `8123`. |
 | `CLICKHOUSE_BIND` | Interface the published port binds to. `127.0.0.1` by default. **In production set the private-overlay IP** of the host you deploy on. Never a public interface. |
 | `CLICKHOUSE_MEM_LIMIT` / `CLICKHOUSE_CPUS` | Container resource caps. ClickHouse self-caps memory at 0.8× `MEM_LIMIT`. |
-| `CH_TENANTS` | Space-separated `db:user:password` triples — one per project. |
 
 ### Networking / security model
 
@@ -113,63 +111,26 @@ curl -s "http://127.0.0.1:${CLICKHOUSE_EXT_PORT}/?query=SHOW%20DATABASES" \
 
 ## How the per-project stacks connect
 
-Point each stack's existing ClickHouse env at this server. Use the **tenant**
-credentials, not the admin ones, and **disable that repo's own `clickhouse`
-service** once it points here.
+Projects do **not** connect to ClickHouse directly. They POST their telemetry to
+the **ingest-api** gateway with a per-project ingest key; the gateway is the only
+writer (it connects here as the admin user) and ClickHouse is reachable only on
+the internal `frdcmp` network. Each app sets just two values in its own `.env`:
 
-**app_one** — note the two binaries read **different** port vars: the main
-API uses `CLICKHOUSE_PORT`, the `log_worker` uses `CLICKHOUSE_HTTP_PORT` (so set
-both). In app_one's `.env`:
 ```dotenv
-CLICKHOUSE_HOST="<infra-host>"     # the CLICKHOUSE_BIND IP of wherever this runs
-CLICKHOUSE_PORT="46003"            # main API (admin log queries)
-CLICKHOUSE_HTTP_PORT="46003"       # log_worker
-CLICKHOUSE_DB="app_one"
-CLICKHOUSE_USER="app_one"
-CLICKHOUSE_PASSWORD="<app_one password from CH_TENANTS>"
-```
-Then drop the `clickhouse` service from app_one's `docker-compose.yml` (or
-stop it) — it no longer runs its own ClickHouse.
-
-**app_two** — same idea, with its own tenant:
-```dotenv
-CLICKHOUSE_HOST="<infra-host>"
-CLICKHOUSE_PORT="46003"
-CLICKHOUSE_HTTP_PORT="46003"
-CLICKHOUSE_DB="app_two"
-CLICKHOUSE_USER="app_two"
-CLICKHOUSE_PASSWORD="<app_two password from CH_TENANTS>"
+TELEMETRY_INGEST_URL="http://<infra-host>:<ingest-port>/v1/events"
+TELEMETRY_API_KEY="ik_…"   # minted per project — see ingest-api/README.md
 ```
 
-Each worker issues `CREATE DATABASE IF NOT EXISTS` + `CREATE TABLE …` on boot;
-the tenant user is granted exactly that on its own database.
-
-> If a stack runs **on the same host** as this server, the same
-> `<infra-host>:46003` endpoint still works locally — no separate localhost
-> wiring needed.
+The `<tenant>.events` table is created automatically on the first insert. See
+[../ingest-api/README.md](../ingest-api/README.md) for minting/revoking keys.
 
 ---
 
 ## Adding a new tenant
 
-The init script only runs on a **fresh** data dir. Two cases:
-
-**A) Before first boot** — just add a triple to `CH_TENANTS` in `.env` and
-`docker compose up -d`.
-
-**B) Already running** — add the triple to `CH_TENANTS` (so it survives a future
-re-init) *and* create it live:
-
-```bash
-source .env
-docker compose exec clickhouse clickhouse-client \
-  --user "$CLICKHOUSE_ADMIN_USER" --password "$CLICKHOUSE_ADMIN_PASSWORD" -n -q "
-    CREATE DATABASE IF NOT EXISTS \`newsys\`;
-    CREATE USER IF NOT EXISTS \`newsys\` IDENTIFIED WITH sha256_password BY 'STRONG_PW' DEFAULT DATABASE \`newsys\`;
-    GRANT ALL ON \`newsys\`.* TO \`newsys\`;
-    GRANT CREATE DATABASE ON \`newsys\`.* TO \`newsys\`;
-"
-```
+No ClickHouse-side step is needed — mint an ingest key for the project (see
+[../ingest-api/README.md](../ingest-api/README.md)) and its database + `events`
+table are created on the first write.
 
 ---
 
@@ -179,7 +140,7 @@ docker compose exec clickhouse clickhouse-client \
 docker compose ps                 # status + health (whole stack)
 docker compose logs -f clickhouse # server logs
 docker compose stop clickhouse    # stop just this service (data persists in clickhouse/clickhouse_data)
-docker compose rm -sf clickhouse && sudo rm -rf clickhouse/clickhouse_data   # full reset (re-runs init)
+docker compose rm -sf clickhouse && sudo rm -rf clickhouse/clickhouse_data   # full reset (wipes all tenant data)
 ```
 
 Disk usage by table:
@@ -199,7 +160,7 @@ an `INSERT … SELECT FORMAT Native` pipe:
 # Copy one table from the old CH to this central CH.
 clickhouse-client --host <old-host> --port <old-tcp-port> --query \
   "SELECT * FROM app_one.page_visits FORMAT Native" \
-| clickhouse-client --host <infra-host> --port 46003 --user app_one --password '…' \
+| clickhouse-client --host <infra-host> --port 46003 --user "$CLICKHOUSE_ADMIN_USER" --password '…' \
   --query "INSERT INTO app_one.page_visits FORMAT Native"
 ```
 
