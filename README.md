@@ -7,9 +7,8 @@
 **Centralised log ingestion: apps POST events, clicklog validates, queues, and
 stores them in ClickHouse.**
 
-One pipeline, one entry point. Every app stack (`app_one`, `app_two`,
-and future projects) ships its telemetry here with nothing but a URL and an API
-key:
+One pipeline, one entry point. Every app stack ships its telemetry here with
+nothing but a URL and an API key:
 
 ```
 app ──POST /v1/events (Bearer <key>)──▶ ingest-api ──▶ valkey queue ──▶ ClickHouse <tenant>.events

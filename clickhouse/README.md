@@ -2,16 +2,15 @@
 
 **The log store. Internal-only — written and read via the ingest-api gateway.**
 
-A single ClickHouse server holding the log data for every project
-(`app_one`, `app_two`, and future stacks). Each project gets its **own
-database** with an `events` table, created on demand by the `ingest-api`
-gateway on the first write for that tenant.
+A single ClickHouse server holding the log data for every project. Each
+project gets its **own database** with an `events` table, created on demand by
+the `ingest-api` gateway on the first write for that tenant.
 
 ```
 ingest-api ──HTTP (clickhouse:8123, internal)──▶ ┌─────────────────────────┐
    (the only client)                             │  clickhouse              │
-                                                 │   ├── db `app_one`   │
-                                                 │   ├── db `app_two`  │
+                                                 │   ├── db `app_one`       │
+                                                 │   ├── db `app_two`       │
                                                  │   └── …  (one/tenant)    │
                                                  └─────────────────────────┘
 ```
@@ -93,9 +92,9 @@ piping `FORMAT Native` through the container:
 ```bash
 # Copy one table from the old CH into this one (run on the infra host).
 clickhouse-client --host <old-host> --port <old-tcp-port> --query \
-  "SELECT * FROM app_one.page_visits FORMAT Native" \
+  "SELECT * FROM <tenant>.<table> FORMAT Native" \
 | docker compose exec -T clickhouse clickhouse-client \
-  --query "INSERT INTO app_one.page_visits FORMAT Native"
+  --query "INSERT INTO <tenant>.<table> FORMAT Native"
 ```
 
 If history isn't needed, just start POSTing — the gateway creates empty tables

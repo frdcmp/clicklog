@@ -216,7 +216,7 @@ function MintModal({
             list="known-tenants"
             value={tenant}
             onChange={(e) => setTenant(e.target.value)}
-            placeholder="app_one"
+            placeholder="myapp"
             autoFocus
           />
           <datalist id="known-tenants">

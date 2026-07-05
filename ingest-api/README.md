@@ -192,8 +192,7 @@ docker compose exec clickhouse clickhouse-client \
 
 ## 7. Reference integration (the thin client pattern)
 
-`app-three` is the canonical example (`rust/src/apps/telemetry/`). The shape,
-in any language:
+The shape of a client, in any language:
 
 1. An `Event` builder whose fields mirror §3.
 2. A bounded in-memory queue + a background task that batches (~500 events or
@@ -202,8 +201,9 @@ in any language:
    queue or a failed POST — logging must never take down the app.
 4. Disabled entirely when `TELEMETRY_INGEST_URL` is empty.
 
-Plus, in app-three: an HTTP middleware emitting one `http` event per request,
-and a `log` tee that forwards `warn!`/`error!` records as events.
+Worth adding on top: an HTTP middleware emitting one `http` event per request
+(with `route`, `http_status`, `duration_ms`), and a `log` tee that forwards
+`warn!`/`error!` records as events.
 
 ---
 
@@ -244,5 +244,5 @@ Valkey rather than losing events.
 | `401` on admin | missing/expired JWT — log in again via the dashboard or `POST /v1/admin/login`. |
 | `accepted` > 0 but nothing in ClickHouse | check `docker compose logs ingest-api` for `insert … failed` (CH down) — events stay buffered in Valkey and flush when CH recovers. |
 | app can't reach the URL | not on the the private overlay overlay, or `INGEST_BIND` is loopback. Confirm `curl http://<infra-host>:46005/health`. |
-| `server` column blank | the app isn't sending `server` — set it (and in app-three, pass `SERVER_NAME` to the backend container). |
+| `server` column blank | the app isn't sending `server` — set it (e.g. pass a `SERVER_NAME` env var to the app container). |
 | events queued but app restarted | the in-app buffer is in-memory; a small number in flight can be lost on restart. Durable buffering starts at the gateway's Valkey. |
