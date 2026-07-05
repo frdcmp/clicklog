@@ -24,6 +24,7 @@ interface FormState {
   severities: Set<Severity>
   category: string
   event_type: string
+  route: string
   source: string
   model: string
   user_id: string
@@ -42,6 +43,7 @@ const initialForm: FormState = {
   severities: new Set(),
   category: '',
   event_type: '',
+  route: '',
   source: '',
   model: '',
   user_id: '',
@@ -59,7 +61,7 @@ function buildQuery(f: FormState): EventsQuery {
   else q.from = f.from
   if (f.customTo) q.to = new Date(f.customTo).toISOString()
   if (f.severities.size) q.severity = [...f.severities].join(',')
-  for (const k of ['category', 'event_type', 'source', 'model', 'user_id', 'request_id', 'q'] as const) {
+  for (const k of ['category', 'event_type', 'route', 'source', 'model', 'user_id', 'request_id', 'q'] as const) {
     if (f[k].trim()) q[k] = f[k].trim()
   }
   if (f.http_status.trim()) q.http_status = f.http_status.trim()
@@ -207,6 +209,9 @@ export function LogsPage() {
             </Field>
             <Field label="Event type">
               <Input value={form.event_type} onChange={(e) => set('event_type', e.target.value)} placeholder="GET, request…" />
+            </Field>
+            <Field label="Route">
+              <Input value={form.route} onChange={(e) => set('route', e.target.value)} placeholder="/api/v1/orders (exact; comma = OR)" />
             </Field>
             <Field label="Source">
               <Input value={form.source} onChange={(e) => set('source', e.target.value)} />

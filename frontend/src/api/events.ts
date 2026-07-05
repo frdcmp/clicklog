@@ -11,6 +11,7 @@ export interface EventsQuery {
   severity?: string
   source?: string
   model?: string
+  route?: string
   user_id?: string
   request_id?: string
   http_status?: string

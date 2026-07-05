@@ -96,7 +96,7 @@ export function DocsPage() {
             <Endpoint method="GET" path="/v1/events" note="search / list" />
             <P>
               Params: <Code>from</Code>/<Code>to</Code> (<Code>-1h</Code>, <Code>-7d</Code>, RFC3339; default last 1h),{' '}
-              <Code>category</Code>, <Code>event_type</Code>, <Code>severity</Code>, <Code>source</Code>,{' '}
+              <Code>category</Code>, <Code>event_type</Code>, <Code>route</Code>, <Code>severity</Code>, <Code>source</Code>,{' '}
               <Code>model</Code>, <Code>user_id</Code>, <Code>http_status</Code> (comma = OR), <Code>q</Code> (message
               substring), <Code>order</Code>, <Code>limit</Code> (≤1000), <Code>cursor</Code>. Returns{' '}
               <Code>{`{ events, next_cursor }`}</Code>.
