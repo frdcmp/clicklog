@@ -104,30 +104,14 @@ API the dashboard uses (see [ingest-api/README.md](ingest-api/README.md)).
 📖 **Full guide — HTTP API, event schema, key management, retention,
 integration, ops & troubleshooting: [ingest-api/README.md](ingest-api/README.md).**
 
-### Client side — just POST, do NOT add your own queue
+### Client side — just POST
 
-The durable buffer lives **here**, in the gateway: each POST is written to the
-gateway's Valkey stream (5M cap, survives a ClickHouse outage) and drained to
-ClickHouse in the background. So an app must **not** stand up its own Redis queue
-+ worker for logs — that just queues the same events twice:
-
-```
-✅ app ─POST─▶ ingest-api ─▶ Valkey ─▶ drain ─▶ ClickHouse        (one queue, here)
-❌ app ─▶ app's Redis ─▶ app worker ─POST─▶ ingest-api ─▶ Valkey…  (two queues, redundant)
-```
-
-Do this in the app, smallest first:
-
-- **Minimum:** fire-and-forget `POST /v1/events` with a batch, short timeout,
-  drop on failure. No Redis, no worker.
-- **Recommended:** an in-**memory** bounded buffer + one background task that
-  flushes every ~1s or ~500 events as a single POST (≤ 1000/batch). Non-blocking
-  on the request path; at most ~1s of in-flight logs lost if the process dies —
-  fine for telemetry.
-
-An app-side **durable** (Redis) queue is only warranted if losing a few seconds
-of logs during a gateway/network blip is unacceptable — rare for telemetry, and
-the right fix then is gateway HA, not a queue in every app.
+That's the whole integration: send events to `POST /v1/events` and move on.
+Queuing, durability, retries, and the ClickHouse write all live **here** in the
+gateway (events land on its Valkey stream and survive a ClickHouse outage) —
+an app needs no Redis, no worker, no local queue. Fire-and-forget is a
+perfectly good client; batching (up to 1000 events per request) is optional if
+you'd rather send once a second than per event.
 
 ### The event standard (enforced — no fallback)
 

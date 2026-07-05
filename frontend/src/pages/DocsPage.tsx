@@ -87,8 +87,8 @@ export function DocsPage() {
   -H 'content-type: application/json' \\
   -d '[{"category":"test","event_type":"smoke","severity":"info","message":"hello"}]'`}</Pre>
             <Callout>
-              Do <b>not</b> add your own Redis queue for logs — the durable buffer lives in the gateway. Fire-and-forget,
-              or use a small in-memory buffer that flushes ~every second.
+              Just POST — queuing, durability, and retries are the gateway's job. Fire-and-forget is a fine client;
+              batching (≤1000 events/request) is optional.
             </Callout>
           </Section>
 

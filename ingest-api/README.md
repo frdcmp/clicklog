@@ -190,20 +190,16 @@ docker compose exec clickhouse clickhouse-client \
 
 ---
 
-## 7. Reference integration (the thin client pattern)
+## 7. Client integration
 
-The shape of a client, in any language:
+There is nothing to build: POST events (single, array, or NDJSON) to
+`TELEMETRY_INGEST_URL` with the bearer key, fire-and-forget. Queuing,
+durability, and retries are the gateway's job, not the client's. Batching
+(≤ 1000 events/request) is optional. Two conventions worth following:
 
-1. An `Event` builder whose fields mirror §3.
-2. A bounded in-memory queue + a background task that batches (~500 events or
-   ~1s) and POSTs to `TELEMETRY_INGEST_URL` with the bearer key.
-3. **Fire-and-forget:** emitting never blocks a request and drops on a full
-   queue or a failed POST — logging must never take down the app.
-4. Disabled entirely when `TELEMETRY_INGEST_URL` is empty.
-
-Worth adding on top: an HTTP middleware emitting one `http` event per request
-(with `route`, `http_status`, `duration_ms`), and a `log` tee that forwards
-`warn!`/`error!` records as events.
+- Logging should never block or crash the app — drop on a failed POST.
+- Treat an unset `TELEMETRY_INGEST_URL` as telemetry off; the gateway is never
+  a hard dependency.
 
 ---
 
