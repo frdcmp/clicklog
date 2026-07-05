@@ -138,8 +138,14 @@ services:
       # `default` ACL user (full access) — only the ingest service touches Valkey.
       # NOTE: VK_ADMIN_PASSWORD must be URL-safe (no @ : / # in it).
       - REDIS_URL=redis://default:${VK_ADMIN_PASSWORD}@valkey:6379
-      # Bearer token guarding the /v1/admin/keys endpoints. Empty = admin disabled.
+      # Legacy static token for x-admin-token curl flows. Empty = that path off.
       - INGEST_ADMIN_TOKEN=${INGEST_ADMIN_TOKEN}
+      # Admin dashboard: single seeded identity + HS256 JWT signing secret.
+      # Empty JWT_SECRET disables /v1/admin/login (dashboard auth).
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_TTL_HOURS=${JWT_TTL_HOURS:-24}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@example.com}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - RUST_LOG=${INGEST_RUST_LOG:-info}
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/health"]

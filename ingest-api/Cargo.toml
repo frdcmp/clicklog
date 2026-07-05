@@ -23,6 +23,8 @@ hex = "0.4"
 rand = "0.8"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["clock"] }
+# HS256 JWTs for the admin dashboard (single seeded admin; see auth.rs).
+jsonwebtoken = "9"
 log = "0.4"
 env_logger = "0.10"
 dotenv = "0.15"

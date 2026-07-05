@@ -20,8 +20,16 @@ const MAX_REPORTED_ERRORS: usize = 20;
 pub struct State {
     pub keys: KeyStore,
     pub valkey: ConnectionManager,
+    /// Legacy static admin token (x-admin-token header) — kept for the README curl flows.
     pub admin_token: String,
     pub ch: Ch,
+    /// HS256 signing secret for dashboard JWTs.
+    pub jwt_secret: String,
+    /// Seeded single admin identity for `/v1/admin/login`.
+    pub admin_email: String,
+    pub admin_password: String,
+    /// JWT lifetime in hours.
+    pub jwt_ttl_hours: i64,
 }
 
 pub async fn health() -> impl Responder {
@@ -153,24 +161,10 @@ pub async fn ingest(
 }
 
 // ── admin ───────────────────────────────────────────────────────────────────
-
-fn admin_ok(req: &HttpRequest, state: &State) -> bool {
-    if state.admin_token.is_empty() {
-        return false; // never allow admin ops without a configured token
-    }
-    let presented = req
-        .headers()
-        .get("x-admin-token")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
-        .or_else(|| {
-            req.headers()
-                .get("authorization")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|a| a.strip_prefix("Bearer ").map(|s| s.to_string()))
-        });
-    presented.as_deref() == Some(state.admin_token.as_str())
-}
+//
+// Authorization for all key endpoints is handled by `auth::require_admin`, which
+// accepts either a dashboard JWT (Authorization: Bearer) or the legacy static
+// `x-admin-token`. See auth.rs.
 
 #[derive(Deserialize)]
 pub struct MintReq {
@@ -184,8 +178,8 @@ pub async fn mint_key(
     state: web::Data<State>,
     body: web::Json<MintReq>,
 ) -> impl Responder {
-    if !admin_ok(&req, &state) {
-        return HttpResponse::Unauthorized().json(serde_json::json!({ "error": "admin only" }));
+    if let Err(r) = crate::auth::require_admin(&req, &state) {
+        return r;
     }
     let tenant = body.tenant.trim();
     if tenant.is_empty() {
@@ -203,8 +197,8 @@ pub async fn mint_key(
 }
 
 pub async fn list_keys(req: HttpRequest, state: web::Data<State>) -> impl Responder {
-    if !admin_ok(&req, &state) {
-        return HttpResponse::Unauthorized().json(serde_json::json!({ "error": "admin only" }));
+    if let Err(r) = crate::auth::require_admin(&req, &state) {
+        return r;
     }
     match state.keys.list().await {
         Ok(rows) => HttpResponse::Ok().json(rows),
@@ -217,8 +211,8 @@ pub async fn revoke_key(
     state: web::Data<State>,
     id: web::Path<String>,
 ) -> impl Responder {
-    if !admin_ok(&req, &state) {
-        return HttpResponse::Unauthorized().json(serde_json::json!({ "error": "admin only" }));
+    if let Err(r) = crate::auth::require_admin(&req, &state) {
+        return r;
     }
     match state.keys.revoke(&id).await {
         Ok(found) => HttpResponse::Ok().json(serde_json::json!({ "revoked": found })),

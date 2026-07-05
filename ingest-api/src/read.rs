@@ -1,11 +1,16 @@
-//! Read API — tenant-scoped queries over each project's `events` table.
+//! Read API — queries over each project's `events` table.
 //!
-//! Same auth as ingest: the API key resolves to ONE tenant, and every query is
-//! hard-scoped to that tenant's `<tenant>.events` table. A key can never read
-//! another tenant's data. Callers never send SQL — they send structured query
-//! params; this module builds parameter-bound, read-only ClickHouse queries from
-//! a fixed allowlist of columns. Filter VALUES are bound (`{p:Type}`); column
-//! and dimension NAMES come only from the allowlists below.
+//! Two entry paths share the same query builders:
+//!   • `/v1/events|stats` (app-facing): the API key resolves to ONE tenant, and
+//!     every query is hard-scoped to that tenant's `<tenant>.events` table.
+//!   • `/v1/admin/events|stats` (dashboard): a JWT admin passes an explicit
+//!     `tenant` param — a single tenant, or `*`/`all` to query ACROSS every
+//!     tenant that has an `events` table (UNION ALL, each row tagged `_tenant`).
+//!
+//! Callers never send SQL — they send structured query params; this module
+//! builds parameter-bound, read-only ClickHouse queries from a fixed allowlist of
+//! columns. Filter VALUES are bound (`{p:Type}`); column/dimension NAMES and the
+//! tenant database identifiers come only from the allowlists / `safe_ident`.
 
 use std::collections::HashMap;
 
@@ -18,6 +23,8 @@ use crate::handlers::{bearer_or_apikey, State};
 const DEFAULT_LIMIT: usize = 100;
 const MAX_LIMIT: usize = 1000;
 const STATS_MAX_ROWS: usize = 5000;
+/// Safety cap on how many tenant DBs a single cross-tenant query fans out over.
+const MAX_UNION_TENANTS: usize = 64;
 
 /// Exact-match string filters: query-param name == column name.
 const STRING_FILTERS: &[&str] = &[
@@ -41,7 +48,7 @@ const STRING_FILTERS: &[&str] = &[
 /// Numeric filters: column name + ClickHouse type for the bound param.
 const NUMERIC_FILTERS: &[(&str, &str)] = &[("http_status", "UInt16")];
 
-/// Dimensions allowed in `group_by` for /v1/stats.
+/// Dimensions allowed in `group_by` for stats.
 const GROUP_DIMS: &[&str] = &[
     "category",
     "event_type",
@@ -78,7 +85,7 @@ impl Params {
 
 /// A safe SQL identifier (used for the tenant database name, which cannot be a
 /// bound parameter). Tenants are admin-controlled slugs; validate anyway.
-fn safe_ident(s: &str) -> bool {
+pub(crate) fn safe_ident(s: &str) -> bool {
     let mut chars = s.chars();
     match chars.next() {
         Some(c) if c == '_' || c.is_ascii_alphabetic() => {}
@@ -101,6 +108,9 @@ fn is_missing(err: &str) -> bool {
 /// (`-15m`, `-1h`, `-7d`, `-30s`) time. Relative is resolved against `now`.
 fn parse_time(s: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
     let s = s.trim();
+    if s.eq_ignore_ascii_case("now") {
+        return Some(now);
+    }
     if let Some(rest) = s.strip_prefix('-') {
         let split = rest.find(|c: char| !c.is_ascii_digit())?;
         let (num, unit) = rest.split_at(split);
@@ -210,20 +220,86 @@ fn build_filters(
     Ok(wh)
 }
 
-// ── GET /v1/events — search / list ──────────────────────────────────────────
+// ── tenant resolution for the admin path ──────────────────────────────────────
 
-pub async fn list_events(
-    req: HttpRequest,
-    state: web::Data<State>,
-    qs: web::Query<HashMap<String, String>>,
-) -> impl Responder {
-    let tenant = match resolve(&req, &state).await {
-        Ok(t) => t,
-        Err(r) => return r,
-    };
-    let q = qs.into_inner();
+/// Resolve the admin `tenant` query param into `(tenant DBs, cross)`. A concrete
+/// name → `([name], false)`. `*` / `all` / empty → every tenant that currently
+/// has an `events` table (from `system.tables`), with `cross = true` — which
+/// makes the read tag each row with `_tenant` and enables `group_by=tenant`, even
+/// when only one tenant happens to have data.
+pub(crate) async fn resolve_admin_tenants(
+    state: &State,
+    param: Option<&String>,
+) -> Result<(Vec<String>, bool), HttpResponse> {
+    match param.map(|s| s.trim()) {
+        Some("*") | Some("all") | Some("") | None => {
+            let mut tenants = existing_event_tenants(state).await;
+            tenants.truncate(MAX_UNION_TENANTS);
+            Ok((tenants, true))
+        }
+        Some(name) => {
+            if !safe_ident(name) {
+                return Err(bad("invalid tenant"));
+            }
+            Ok((vec![name.to_string()], false))
+        }
+    }
+}
+
+/// Databases (other than the control-plane `ingest` db) that have an `events`
+/// table, i.e. tenants that have received at least one event.
+pub(crate) async fn existing_event_tenants(state: &State) -> Vec<String> {
+    let sql = "SELECT database FROM system.tables WHERE name = 'events' AND database NOT IN ('ingest','system','default') ORDER BY database";
+    let rows = state.ch.query_rows(sql).await.unwrap_or_default();
+    rows.into_iter()
+        .filter_map(|r| r.get("database").and_then(|v| v.as_str()).map(String::from))
+        .filter(|t| safe_ident(t))
+        .collect()
+}
+
+// ── event search core (shared by v1 + admin) ─────────────────────────────────
+
+/// Build the events SELECT. `tag=false` → plain single-tenant scan (no `_tenant`
+/// column, so the v1 shape is unchanged). `tag=true` → UNION ALL with a `_tenant`
+/// literal per branch (works for one or many tenants), ordered/limited globally.
+fn events_sql(tenants: &[String], wh: &[String], dir: &str, limit: usize, tag: bool) -> String {
+    let where_clause = wh.join(" AND ");
+    if !tag {
+        let t = &tenants[0];
+        format!(
+            "SELECT *, toUnixTimestamp64Milli(ts) AS _ts_ms FROM `{t}`.events \
+             WHERE {where_clause} ORDER BY ts {dir}, event_id {dir} LIMIT {limit} FORMAT JSONEachRow"
+        )
+    } else {
+        let branches: Vec<String> = tenants
+            .iter()
+            .map(|t| {
+                format!(
+                    "SELECT *, '{t}' AS _tenant, toUnixTimestamp64Milli(ts) AS _ts_ms \
+                     FROM `{t}`.events WHERE {where_clause}"
+                )
+            })
+            .collect();
+        format!(
+            "SELECT * FROM ({}) ORDER BY ts {dir}, event_id {dir} LIMIT {limit} FORMAT JSONEachRow",
+            branches.join(" UNION ALL ")
+        )
+    }
+}
+
+/// Search events across `tenants`. `cross` tags rows with `_tenant` and is set by
+/// the admin "all" selection. Returns the JSON body `{events, next_cursor}` or an
+/// error `HttpResponse`.
+pub(crate) async fn query_events(
+    state: &State,
+    tenants: &[String],
+    cross: bool,
+    q: &HashMap<String, String>,
+) -> Result<Value, HttpResponse> {
+    if tenants.is_empty() {
+        return Ok(json!({ "events": [], "next_cursor": Value::Null }));
+    }
     let now = Utc::now();
-
     let limit = q
         .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
@@ -232,10 +308,7 @@ pub async fn list_events(
     let desc = q.get("order").map(|s| s != "asc").unwrap_or(true);
 
     let mut p = Params::new();
-    let mut wh = match build_filters(&q, &mut p, now) {
-        Ok(w) => w,
-        Err(e) => return bad(&e),
-    };
+    let mut wh = build_filters(q, &mut p, now).map_err(|e| bad(&e))?;
 
     // Keyset pagination on (ts, event_id). Cursor format: "<unix_millis>:<uuid>".
     if let Some(cur) = q.get("cursor") {
@@ -252,20 +325,16 @@ pub async fn list_events(
     }
 
     let dir = if desc { "DESC" } else { "ASC" };
-    let sql = format!(
-        "SELECT *, toUnixTimestamp64Milli(ts) AS _ts_ms FROM `{tenant}`.events \
-         WHERE {} ORDER BY ts {dir}, event_id {dir} LIMIT {limit} FORMAT JSONEachRow",
-        wh.join(" AND ")
-    );
+    let sql = events_sql(tenants, &wh, dir, limit, cross);
 
     let mut events = match state.ch.query_rows_params(&sql, &p.items).await {
         Ok(r) => r,
         Err(e) => {
             if is_missing(&e) {
-                return HttpResponse::Ok().json(json!({ "events": [], "next_cursor": Value::Null }));
+                return Ok(json!({ "events": [], "next_cursor": Value::Null }));
             }
-            log::warn!("read query failed for '{tenant}': {e}");
-            return HttpResponse::InternalServerError().json(json!({ "error": "query failed" }));
+            log::warn!("read query failed for {tenants:?}: {e}");
+            return Err(HttpResponse::InternalServerError().json(json!({ "error": "query failed" })));
         }
     };
 
@@ -286,46 +355,40 @@ pub async fn list_events(
         }
     }
 
-    HttpResponse::Ok().json(json!({ "events": events, "next_cursor": next_cursor }))
+    Ok(json!({ "events": events, "next_cursor": next_cursor }))
 }
 
-// ── GET /v1/events/{event_id} — single event ────────────────────────────────
-
-pub async fn get_event(
-    req: HttpRequest,
-    state: web::Data<State>,
-    path: web::Path<String>,
-) -> impl Responder {
-    let tenant = match resolve(&req, &state).await {
-        Ok(t) => t,
-        Err(r) => return r,
-    };
-    let id = path.into_inner();
-    if uuid::Uuid::parse_str(&id).is_err() {
-        return bad("event_id must be a UUID");
+/// Fetch a single event by UUID from a single tenant.
+pub(crate) async fn query_event(
+    state: &State,
+    tenant: &str,
+    id: &str,
+) -> Result<Value, HttpResponse> {
+    if uuid::Uuid::parse_str(id).is_err() {
+        return Err(bad("event_id must be a UUID"));
     }
     let mut p = Params::new();
-    let id_ph = p.add("UUID", id);
-    let sql =
-        format!("SELECT * FROM `{tenant}`.events WHERE event_id = {id_ph} LIMIT 1 FORMAT JSONEachRow");
-
+    let id_ph = p.add("UUID", id.to_string());
+    let sql = format!(
+        "SELECT * FROM `{tenant}`.events WHERE event_id = {id_ph} LIMIT 1 FORMAT JSONEachRow"
+    );
     let rows = match state.ch.query_rows_params(&sql, &p.items).await {
         Ok(r) => r,
         Err(e) => {
             if is_missing(&e) {
-                return HttpResponse::NotFound().json(json!({ "error": "not found" }));
+                return Err(HttpResponse::NotFound().json(json!({ "error": "not found" })));
             }
             log::warn!("read query failed for '{tenant}': {e}");
-            return HttpResponse::InternalServerError().json(json!({ "error": "query failed" }));
+            return Err(HttpResponse::InternalServerError().json(json!({ "error": "query failed" })));
         }
     };
     match rows.into_iter().next() {
-        Some(r) => HttpResponse::Ok().json(r),
-        None => HttpResponse::NotFound().json(json!({ "error": "not found" })),
+        Some(r) => Ok(r),
+        None => Err(HttpResponse::NotFound().json(json!({ "error": "not found" }))),
     }
 }
 
-// ── GET /v1/stats — aggregates / timeseries ─────────────────────────────────
+// ── stats core (shared by v1 + admin) ─────────────────────────────────────────
 
 fn parse_metric(opt: Option<&String>) -> Result<String, String> {
     match opt.map(|s| s.as_str()).unwrap_or("count") {
@@ -360,6 +423,121 @@ fn interval_expr(s: &str) -> Option<&'static str> {
     })
 }
 
+/// Build the stats FROM source. `tag=false` → the table directly (WHERE inline).
+/// `tag=true` → a UNION ALL subquery, each branch tagged with a `_tenant` literal
+/// so `group_by=tenant` works (also fine with a single tenant).
+fn stats_from(tenants: &[String], where_clause: &str, tag: bool) -> String {
+    if !tag {
+        format!("`{}`.events WHERE {where_clause}", tenants[0])
+    } else {
+        let branches: Vec<String> = tenants
+            .iter()
+            .map(|t| format!("SELECT *, '{t}' AS _tenant FROM `{t}`.events WHERE {where_clause}"))
+            .collect();
+        format!("({})", branches.join(" UNION ALL "))
+    }
+}
+
+/// Compute aggregates / timeseries across `tenants`. `cross` (admin "all")
+/// enables the synthetic `tenant` dimension. Returns `{stats}` body.
+pub(crate) async fn query_stats(
+    state: &State,
+    tenants: &[String],
+    cross: bool,
+    q: &HashMap<String, String>,
+) -> Result<Value, HttpResponse> {
+    if tenants.is_empty() {
+        return Ok(json!({ "stats": [] }));
+    }
+    let now = Utc::now();
+
+    // Resolve the group dimension. `tenant` is a synthetic dim only valid on a
+    // cross-tenant query (the `_tenant` literal exists then).
+    let group_col = match q.get("group_by").map(|s| s.as_str()) {
+        Some("tenant") if cross => "_tenant".to_string(),
+        Some("tenant") => return Err(bad("group_by=tenant requires the 'all' tenant selection")),
+        Some(g) if GROUP_DIMS.contains(&g) => g.to_string(),
+        Some(_) => return Err(bad("invalid group_by")),
+        None => return Err(bad("group_by is required")),
+    };
+    let metric = parse_metric(q.get("metric")).map_err(|e| bad(&e))?;
+    let bucket = match q.get("interval") {
+        Some(i) => match interval_expr(i) {
+            Some(expr) => Some(expr),
+            None => return Err(bad("invalid interval (1m|5m|15m|30m|1h|6h|12h|1d)")),
+        },
+        None => None,
+    };
+
+    let mut p = Params::new();
+    let wh = build_filters(q, &mut p, now).map_err(|e| bad(&e))?;
+
+    let (mut select, group_by, order) = if let Some(b) = bucket {
+        (
+            format!("{group_col} AS group_value, {b} AS bucket"),
+            "group_value, bucket".to_string(),
+            "bucket ASC, value DESC".to_string(),
+        )
+    } else {
+        (
+            format!("{group_col} AS group_value"),
+            "group_value".to_string(),
+            "value DESC".to_string(),
+        )
+    };
+    select.push_str(&format!(", {metric} AS value"));
+
+    let from = stats_from(tenants, &wh.join(" AND "), cross);
+    let sql = format!(
+        "SELECT {select} FROM {from} GROUP BY {group_by} ORDER BY {order} \
+         LIMIT {STATS_MAX_ROWS} FORMAT JSONEachRow"
+    );
+
+    let rows = match state.ch.query_rows_params(&sql, &p.items).await {
+        Ok(r) => r,
+        Err(e) => {
+            if is_missing(&e) {
+                return Ok(json!({ "stats": [] }));
+            }
+            log::warn!("stats query failed for {tenants:?}: {e}");
+            return Err(HttpResponse::InternalServerError().json(json!({ "error": "query failed" })));
+        }
+    };
+    Ok(json!({ "stats": rows }))
+}
+
+// ── v1 handlers (API-key scoped to one tenant) ────────────────────────────────
+
+pub async fn list_events(
+    req: HttpRequest,
+    state: web::Data<State>,
+    qs: web::Query<HashMap<String, String>>,
+) -> impl Responder {
+    let tenant = match resolve(&req, &state).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    match query_events(&state, &[tenant], false, &qs.into_inner()).await {
+        Ok(body) => HttpResponse::Ok().json(body),
+        Err(r) => r,
+    }
+}
+
+pub async fn get_event(
+    req: HttpRequest,
+    state: web::Data<State>,
+    path: web::Path<String>,
+) -> impl Responder {
+    let tenant = match resolve(&req, &state).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    match query_event(&state, &tenant, &path.into_inner()).await {
+        Ok(ev) => HttpResponse::Ok().json(ev),
+        Err(r) => r,
+    }
+}
+
 pub async fn stats(
     req: HttpRequest,
     state: web::Data<State>,
@@ -369,63 +547,8 @@ pub async fn stats(
         Ok(t) => t,
         Err(r) => return r,
     };
-    let q = qs.into_inner();
-    let now = Utc::now();
-
-    let group = match q.get("group_by") {
-        Some(g) if GROUP_DIMS.contains(&g.as_str()) => g.clone(),
-        Some(_) => return bad("invalid group_by"),
-        None => return bad("group_by is required"),
-    };
-    let metric = match parse_metric(q.get("metric")) {
-        Ok(m) => m,
-        Err(e) => return bad(&e),
-    };
-    let bucket = match q.get("interval") {
-        Some(i) => match interval_expr(i) {
-            Some(expr) => Some(expr),
-            None => return bad("invalid interval (1m|5m|15m|30m|1h|6h|12h|1d)"),
-        },
-        None => None,
-    };
-
-    let mut p = Params::new();
-    let wh = match build_filters(&q, &mut p, now) {
-        Ok(w) => w,
-        Err(e) => return bad(&e),
-    };
-
-    let (mut select, mut group_by, order) = if let Some(b) = bucket {
-        (
-            format!("{group} AS group_value, {b} AS bucket"),
-            "group_value, bucket".to_string(),
-            "bucket ASC, value DESC".to_string(),
-        )
-    } else {
-        (
-            format!("{group} AS group_value"),
-            "group_value".to_string(),
-            "value DESC".to_string(),
-        )
-    };
-    select.push_str(&format!(", {metric} AS value"));
-    let _ = &mut group_by;
-
-    let sql = format!(
-        "SELECT {select} FROM `{tenant}`.events WHERE {} GROUP BY {group_by} ORDER BY {order} \
-         LIMIT {STATS_MAX_ROWS} FORMAT JSONEachRow",
-        wh.join(" AND ")
-    );
-
-    let rows = match state.ch.query_rows_params(&sql, &p.items).await {
-        Ok(r) => r,
-        Err(e) => {
-            if is_missing(&e) {
-                return HttpResponse::Ok().json(json!({ "stats": [] }));
-            }
-            log::warn!("stats query failed for '{tenant}': {e}");
-            return HttpResponse::InternalServerError().json(json!({ "error": "query failed" }));
-        }
-    };
-    HttpResponse::Ok().json(json!({ "stats": rows }))
+    match query_stats(&state, &[tenant], false, &qs.into_inner()).await {
+        Ok(body) => HttpResponse::Ok().json(body),
+        Err(r) => r,
+    }
 }
