@@ -11,7 +11,7 @@ import { useKeys, useMintKey, useRevokeKey } from '../query/keys'
 import { useTenants } from '../query/tenants'
 import type { MintResult } from '../api/keys'
 import type { ApiKey } from '../types'
-import { fmtTs } from '../lib/time'
+import { fmtDateTime } from '../lib/time'
 import { cn } from '../lib/cn'
 
 type Tab = 'active' | 'revoked'
@@ -119,14 +119,14 @@ function KeyList({ keys, onRevoke }: { keys: ApiKey[]; onRevoke: (k: ApiKey) => 
             <tr key={k.id} className="border-b border-zinc-100 last:border-0">
               <td className="px-4 py-2.5 font-medium text-zinc-800">{k.tenant}</td>
               <td className="px-4 py-2.5 text-zinc-500">{k.label || '—'}</td>
-              <td className="px-4 py-2.5 text-zinc-500">{fmtTs(k.created_at)}</td>
+              <td className="px-4 py-2.5 text-zinc-500">{fmtDateTime(k.created_at)}</td>
               <td className="px-4 py-2.5 text-right">
                 {k.active === 1 ? (
                   <Button variant="ghost" size="sm" className="text-red-600 hover:bg-red-50" onClick={() => onRevoke(k)}>
                     Revoke
                   </Button>
                 ) : (
-                  <span className="text-xs text-zinc-400">revoked {fmtTs(k.revoked_at)}</span>
+                  <span className="text-xs text-zinc-400">revoked {fmtDateTime(k.revoked_at)}</span>
                 )}
               </td>
             </tr>
@@ -142,7 +142,7 @@ function KeyList({ keys, onRevoke }: { keys: ApiKey[]; onRevoke: (k: ApiKey) => 
               <div className="font-medium text-zinc-800">{k.tenant}</div>
               <div className="truncate text-xs text-zinc-500">{k.label || '—'}</div>
               <div className="text-xs text-zinc-400">
-                {k.active === 1 ? fmtTs(k.created_at) : `revoked ${fmtTs(k.revoked_at)}`}
+                {k.active === 1 ? fmtDateTime(k.created_at) : `revoked ${fmtDateTime(k.revoked_at)}`}
               </div>
             </div>
             {k.active === 1 && (
@@ -210,7 +210,7 @@ function MintModal({
       }
     >
       <form id="mint-form" onSubmit={submit} className="space-y-4">
-        <Field label="Tenant" htmlFor="tenant" hint="Lowercase slug. Also the ClickHouse DB and (if used) the Valkey key prefix.">
+        <Field label="Tenant" htmlFor="tenant" hint="Lowercase slug. Also the tenant's ClickHouse database name.">
           <Input
             id="tenant"
             list="known-tenants"

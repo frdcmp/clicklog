@@ -7,7 +7,7 @@ import { SeverityBadge, StatusBadge, Badge } from '../components/ui/Badge'
 import { Drawer } from '../components/ui/Modal'
 import { EmptyState, ErrorNote, Spinner } from '../components/ui/Feedback'
 import { cn } from '../lib/cn'
-import { RANGE_PRESETS, fmtTs, fmtNumber } from '../lib/time'
+import { RANGE_PRESETS, fmtDateTime, fmtNumber } from '../lib/time'
 import { downloadEventsCsv } from '../lib/csv'
 import { useEventsInfinite } from '../query/events'
 import { useTenants } from '../query/tenants'
@@ -299,7 +299,7 @@ function ResultsTable({
                 onClick={() => onSelect(e)}
                 className="cursor-pointer border-b border-zinc-100 last:border-0 hover:bg-zinc-50"
               >
-                <td className="whitespace-nowrap px-3 py-2 text-zinc-500">{fmtTs(e.ts)}</td>
+                <td className="whitespace-nowrap px-3 py-2 text-zinc-500">{fmtDateTime(e.ts)}</td>
                 {showTenant && (
                   <td className="px-3 py-2">
                     <Badge tone="accent">{e._tenant || '—'}</Badge>
@@ -334,7 +334,7 @@ function ResultsTable({
                 <SeverityBadge severity={e.severity} />
                 {showTenant && <Badge tone="accent">{e._tenant}</Badge>}
               </div>
-              <span className="text-xs text-zinc-400">{fmtTs(e.ts)}</span>
+              <span className="text-xs text-zinc-400">{fmtDateTime(e.ts)}</span>
             </div>
             <div className="mt-1 truncate text-sm text-zinc-700">{e.message || `${e.category} / ${e.event_type}`}</div>
             <div className="mt-0.5 flex items-center gap-2 text-xs text-zinc-400">
@@ -377,7 +377,13 @@ function EventDrawer({ event, onClose }: { event: LogEvent | null; onClose: () =
               <div key={String(f)} className="min-w-0">
                 <dt className="text-xs font-medium uppercase tracking-wide text-zinc-400">{String(f)}</dt>
                 <dd className="break-words text-zinc-800">
-                  {f === 'severity' ? <SeverityBadge severity={String(event[f])} /> : String(event[f])}
+                  {f === 'severity' ? (
+                    <SeverityBadge severity={String(event[f])} />
+                  ) : f === 'ts' || f === 'received_at' ? (
+                    fmtDateTime(String(event[f]))
+                  ) : (
+                    String(event[f])
+                  )}
                 </dd>
               </div>
             ))}
