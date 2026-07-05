@@ -106,7 +106,7 @@ function BarChart({ buckets }: { buckets: Bucket[] }) {
   return (
     <div className="flex h-40 items-end gap-0.5 overflow-x-auto">
       {buckets.map((b) => (
-        <div key={b.bucket} className="group flex min-w-[8px] flex-1 flex-col items-center justify-end">
+        <div key={b.bucket} className="group flex h-full min-w-[8px] flex-1 flex-col items-center justify-end">
           <div
             className="w-full rounded-t bg-accent-500/80 transition-colors group-hover:bg-accent-600"
             style={{ height: `${Math.max(2, (b.total / max) * 100)}%` }}
