@@ -1,4 +1,8 @@
-# clicklog
+<p align="center">
+  <img src="frontend/public/logo.svg" alt="clicklog — a pixel-art wood log" width="128">
+</p>
+
+<h1 align="center">clicklog</h1>
 
 **Centralised log ingestion: apps POST events, clicklog validates, queues, and
 stores them in ClickHouse.**

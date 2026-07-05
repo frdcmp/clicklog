@@ -42,9 +42,7 @@ export function LoginPage() {
     <div className="flex min-h-full items-center justify-center bg-zinc-50 px-4 py-12">
       <div className="w-full max-w-sm">
         <div className="mb-6 text-center">
-          <span className="mx-auto mb-3 grid size-11 place-items-center rounded-xl bg-accent-600 text-lg font-bold text-white">
-            f
-          </span>
+          <img src="/logo.svg" alt="" className="mx-auto mb-3 size-12 [image-rendering:pixelated]" />
           <h1 className="text-lg font-semibold text-zinc-900">clicklog admin</h1>
           <p className="text-sm text-zinc-500">Sign in to manage the ingest gateway.</p>
         </div>
