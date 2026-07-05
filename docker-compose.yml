@@ -144,7 +144,7 @@ services:
       # Empty JWT_SECRET disables /v1/admin/login (dashboard auth).
       - JWT_SECRET=${JWT_SECRET}
       - JWT_TTL_HOURS=${JWT_TTL_HOURS:-24}
-      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@example.com}
+      - ADMIN_EMAIL=${ADMIN_EMAIL}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - RUST_LOG=${INGEST_RUST_LOG:-info}
     healthcheck:

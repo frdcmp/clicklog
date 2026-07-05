@@ -32,9 +32,11 @@ fn creds_match(a: &str, b: &str) -> bool {
 }
 
 pub async fn login(state: web::Data<State>, body: web::Json<LoginReq>) -> impl Responder {
-    if state.jwt_secret.is_empty() {
+    // Fail safe: with no signing secret or no seeded credentials, login is
+    // disabled entirely — never accept blank/blank against unset env.
+    if state.jwt_secret.is_empty() || state.admin_email.trim().is_empty() || state.admin_password.is_empty() {
         return HttpResponse::ServiceUnavailable()
-            .json(json!({ "error": "auth not configured (JWT_SECRET unset)" }));
+            .json(json!({ "error": "auth not configured (set JWT_SECRET, ADMIN_EMAIL, ADMIN_PASSWORD)" }));
     }
     let email = body.email.trim();
     let ok = creds_match(email, state.admin_email.trim())

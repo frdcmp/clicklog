@@ -75,10 +75,13 @@ async fn main() -> std::io::Result<()> {
         admin_token: std::env::var("INGEST_ADMIN_TOKEN").unwrap_or_default(),
         ch: ch.clone(),
         jwt_secret,
-        admin_email: std::env::var("ADMIN_EMAIL").unwrap_or_else(|_| "admin@example.com".to_string()),
-        admin_password: std::env::var("ADMIN_PASSWORD").unwrap_or_else(|_| "REDACTED".to_string()),
+        admin_email: std::env::var("ADMIN_EMAIL").unwrap_or_default(),
+        admin_password: std::env::var("ADMIN_PASSWORD").unwrap_or_default(),
         jwt_ttl_hours,
     };
+    if state.admin_email.trim().is_empty() || state.admin_password.is_empty() {
+        log::warn!("ADMIN_EMAIL/ADMIN_PASSWORD unset — dashboard login is disabled");
+    }
     if state.admin_token.is_empty() {
         log::warn!("INGEST_ADMIN_TOKEN is empty — legacy x-admin-token auth is disabled (JWT still works)");
     }

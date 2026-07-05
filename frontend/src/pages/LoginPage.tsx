@@ -11,7 +11,7 @@ export function LoginPage() {
   const { isAuthed, login } = useAuth()
   const navigate = useNavigate()
   const mutation = useLogin()
-  const [email, setEmail] = useState('admin@example.com')
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
 
   if (isAuthed) return <Navigate to="/" replace />
