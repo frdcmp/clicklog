@@ -1,9 +1,8 @@
-import { useState, type FormEvent } from 'react'
+import { useMemo, useState, type FormEvent } from 'react'
 import { PageHeader } from '../components/layout/PageHeader'
 import { Card } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
 import { Field, Input } from '../components/ui/Field'
-import { Badge } from '../components/ui/Badge'
 import { Modal } from '../components/ui/Modal'
 import { CopyButton } from '../components/ui/CopyButton'
 import { EmptyState, ErrorNote, Spinner } from '../components/ui/Feedback'
@@ -13,13 +12,27 @@ import { useTenants } from '../query/tenants'
 import type { MintResult } from '../api/keys'
 import type { ApiKey } from '../types'
 import { fmtTs } from '../lib/time'
+import { cn } from '../lib/cn'
+
+type Tab = 'active' | 'revoked'
 
 export function KeysPage() {
   const keys = useKeys()
   const tenants = useTenants()
+  const [tab, setTab] = useState<Tab>('active')
   const [mintOpen, setMintOpen] = useState(false)
   const [minted, setMinted] = useState<MintResult | null>(null)
   const [revoking, setRevoking] = useState<ApiKey | null>(null)
+
+  const { active, revoked } = useMemo(() => {
+    const all = keys.data ?? []
+    return {
+      active: all.filter((k) => k.active === 1),
+      revoked: all.filter((k) => k.active !== 1),
+    }
+  }, [keys.data])
+
+  const current = tab === 'active' ? active : revoked
 
   return (
     <div>
@@ -35,10 +48,22 @@ export function KeysPage() {
         </div>
       ) : keys.error ? (
         <ErrorNote>Failed to load keys.</ErrorNote>
-      ) : (keys.data?.length ?? 0) === 0 ? (
-        <EmptyState title="No API keys yet" hint="Mint one to onboard a service for logging." />
       ) : (
-        <KeyList keys={keys.data!} onRevoke={setRevoking} />
+        <>
+          <div className="mb-4 flex gap-1 border-b border-zinc-200">
+            <TabButton label="Active" count={active.length} on={tab === 'active'} onClick={() => setTab('active')} />
+            <TabButton label="Revoked" count={revoked.length} on={tab === 'revoked'} onClick={() => setTab('revoked')} />
+          </div>
+
+          {current.length === 0 ? (
+            <EmptyState
+              title={tab === 'active' ? 'No active keys' : 'No revoked keys'}
+              hint={tab === 'active' ? 'Mint one to onboard a service for logging.' : undefined}
+            />
+          ) : (
+            <KeyList keys={current} onRevoke={setRevoking} />
+          )}
+        </>
       )}
 
       <MintModal
@@ -46,6 +71,7 @@ export function KeysPage() {
         onClose={() => setMintOpen(false)}
         onMinted={(m) => {
           setMintOpen(false)
+          setTab('active')
           setMinted(m)
         }}
         knownTenants={tenants.data?.map((t) => t.tenant) ?? []}
@@ -58,6 +84,23 @@ export function KeysPage() {
   )
 }
 
+function TabButton({ label, count, on, onClick }: { label: string; count: number; on: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        '-mb-px border-b-2 px-3 py-2 text-sm font-medium transition-colors',
+        on ? 'border-accent-600 text-accent-700' : 'border-transparent text-zinc-500 hover:text-zinc-800',
+      )}
+    >
+      {label}
+      <span className={cn('ml-1.5 rounded px-1.5 py-0.5 text-xs', on ? 'bg-accent-50 text-accent-700' : 'bg-zinc-100 text-zinc-400')}>
+        {count}
+      </span>
+    </button>
+  )
+}
+
 function KeyList({ keys, onRevoke }: { keys: ApiKey[]; onRevoke: (k: ApiKey) => void }) {
   return (
     <Card className="overflow-hidden">
@@ -67,7 +110,6 @@ function KeyList({ keys, onRevoke }: { keys: ApiKey[]; onRevoke: (k: ApiKey) => 
           <tr className="border-b border-zinc-200 text-left text-xs uppercase tracking-wide text-zinc-400">
             <th className="px-4 py-2.5 font-medium">Tenant</th>
             <th className="px-4 py-2.5 font-medium">Label</th>
-            <th className="px-4 py-2.5 font-medium">Status</th>
             <th className="px-4 py-2.5 font-medium">Created</th>
             <th className="px-4 py-2.5" />
           </tr>
@@ -77,15 +119,14 @@ function KeyList({ keys, onRevoke }: { keys: ApiKey[]; onRevoke: (k: ApiKey) => 
             <tr key={k.id} className="border-b border-zinc-100 last:border-0">
               <td className="px-4 py-2.5 font-medium text-zinc-800">{k.tenant}</td>
               <td className="px-4 py-2.5 text-zinc-500">{k.label || '—'}</td>
-              <td className="px-4 py-2.5">
-                {k.active === 1 ? <Badge tone="green">active</Badge> : <Badge tone="red">revoked</Badge>}
-              </td>
               <td className="px-4 py-2.5 text-zinc-500">{fmtTs(k.created_at)}</td>
               <td className="px-4 py-2.5 text-right">
-                {k.active === 1 && (
+                {k.active === 1 ? (
                   <Button variant="ghost" size="sm" className="text-red-600 hover:bg-red-50" onClick={() => onRevoke(k)}>
                     Revoke
                   </Button>
+                ) : (
+                  <span className="text-xs text-zinc-400">revoked {fmtTs(k.revoked_at)}</span>
                 )}
               </td>
             </tr>
@@ -98,12 +139,11 @@ function KeyList({ keys, onRevoke }: { keys: ApiKey[]; onRevoke: (k: ApiKey) => 
         {keys.map((k) => (
           <li key={k.id} className="flex items-center justify-between gap-3 p-4">
             <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="font-medium text-zinc-800">{k.tenant}</span>
-                {k.active === 1 ? <Badge tone="green">active</Badge> : <Badge tone="red">revoked</Badge>}
-              </div>
+              <div className="font-medium text-zinc-800">{k.tenant}</div>
               <div className="truncate text-xs text-zinc-500">{k.label || '—'}</div>
-              <div className="text-xs text-zinc-400">{fmtTs(k.created_at)}</div>
+              <div className="text-xs text-zinc-400">
+                {k.active === 1 ? fmtTs(k.created_at) : `revoked ${fmtTs(k.revoked_at)}`}
+              </div>
             </div>
             {k.active === 1 && (
               <Button variant="ghost" size="sm" className="text-red-600" onClick={() => onRevoke(k)}>
