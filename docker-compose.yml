@@ -162,6 +162,28 @@ services:
     ports:
       - "${INGEST_BIND:-127.0.0.1}:${INGEST_EXT_PORT:-46005}:8080"
 
+  # ── Admin dashboard (React SPA + nginx) — OPTIONAL, profile: dashboard ───────
+  # A static React build served by nginx, which also reverse-proxies /v1 + /health
+  # to the ingest-api on the internal network (same-origin → no CORS). Kept behind
+  # a compose profile so the core logging stack stays decoupled from a UI build.
+  #   Start with it:   docker compose --profile dashboard up -d
+  #   Rebuild it:      docker compose --profile dashboard build frontend
+  frontend:
+    container_name: frdcmp-frontend
+    build: ./frontend
+    restart: unless-stopped
+    profiles: ["dashboard"]
+    depends_on:
+      ingest-api:
+        condition: service_healthy
+    networks:
+      - frdcmp
+    # Publish the dashboard, bound to FRONTEND_BIND. Default 127.0.0.1. In
+    # production set FRONTEND_BIND to the host's private-overlay IP so admins on
+    # OTHER hosts can reach it. NEVER bind to a public NIC (auth is a JWT only).
+    ports:
+      - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_EXT_PORT:-46006}:80"
+
   # ── Monitoring (Prometheus + Grafana) — REMOVED for now ──────────────────────
   # The prometheus + grafana services were removed from this stack. Their config
   # still lives under ./monitoring/ so they can be restored later. To bring them

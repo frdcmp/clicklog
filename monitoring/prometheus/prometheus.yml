@@ -18,7 +18,7 @@ scrape_configs:
     static_configs:
       - targets: ["172.25.212.41:8099"]
         labels: { service: app_one, node: <node> }
-      - targets: ["172.25.125.233:8099"]
+      - targets: ["<overlay-ip>:8099"]
         labels: { service: app_one, node: <infra-host> }
       - targets: ["172.25.20.102:8099"]
         labels: { service: app_one, node: decaberry }

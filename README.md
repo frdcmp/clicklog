@@ -135,7 +135,7 @@ TELEMETRY_API_KEY="ik_…"                                     # one key → one
 the only Valkey client): mint a key, set two env vars, POST events.
 
 ```bash
-curl -s -X POST http://172.25.125.233:46005/v1/admin/keys \
+curl -s -X POST http://<overlay-ip>:46005/v1/admin/keys \
   -H "x-admin-token: $INGEST_ADMIN_TOKEN" \
   -H 'content-type: application/json' \
   -d '{"tenant":"app_three","label":"app-three prod"}'
@@ -250,8 +250,16 @@ frdcmp-infra/
 ├── .env / .env.example  ← single env for the whole stack
 ├── clickhouse/          ← logging store: config.d/, init/, README, data dirs
 ├── valkey/              ← broker/cache/locks: valkey.conf, entrypoint.sh, README
+├── ingest-api/          ← telemetry gateway (Rust): src/, Dockerfile, README
+├── frontend/            ← admin dashboard (React+nginx, profile: dashboard), README
 └── monitoring/          ← Prometheus + Grafana: prometheus.yml, grafana/, README
 ```
+
+> **Admin dashboard (optional):** a React UI for API-key CRUD, cross-tenant log
+> search, and docs, served by nginx and gated behind the `dashboard` compose
+> profile. Start the stack with it via `docker compose --profile dashboard up -d`
+> (default `127.0.0.1:46006`). Login is a single seeded admin (JWT) — set
+> `JWT_SECRET` + `ADMIN_PASSWORD` in `.env`. See [frontend/README.md](frontend/README.md).
 
 Secrets (`.env`) and data volumes (`*_data/`, `*_logs/`) are git-ignored — only
 `.env.example` and config are tracked.
