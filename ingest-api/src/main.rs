@@ -72,7 +72,6 @@ async fn main() -> std::io::Result<()> {
     let state = State {
         keys: KeyStore::new(ch.clone()),
         valkey: cm,
-        admin_token: std::env::var("INGEST_ADMIN_TOKEN").unwrap_or_default(),
         ch: ch.clone(),
         jwt_secret,
         admin_email: std::env::var("ADMIN_EMAIL").unwrap_or_default(),
@@ -82,10 +81,6 @@ async fn main() -> std::io::Result<()> {
     if state.admin_email.trim().is_empty() || state.admin_password.is_empty() {
         log::warn!("ADMIN_EMAIL/ADMIN_PASSWORD unset — dashboard login is disabled");
     }
-    if state.admin_token.is_empty() {
-        log::warn!("INGEST_ADMIN_TOKEN is empty — legacy x-admin-token auth is disabled (JWT still works)");
-    }
-
     let bind = std::env::var("INGEST_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
     log::info!("📥 ingest-api listening on {bind}");
 
@@ -104,7 +99,7 @@ async fn main() -> std::io::Result<()> {
             .route("/v1/admin/keys", web::post().to(handlers::mint_key))
             .route("/v1/admin/keys", web::get().to(handlers::list_keys))
             .route("/v1/admin/keys/{id}", web::delete().to(handlers::revoke_key))
-            // Dashboard admin surface (JWT or legacy x-admin-token; login is public).
+            // Dashboard admin surface (JWT; login is public).
             .route("/v1/admin/login", web::post().to(admin::login))
             .route("/v1/admin/me", web::get().to(admin::me))
             .route("/v1/admin/tenants", web::get().to(admin::tenants))

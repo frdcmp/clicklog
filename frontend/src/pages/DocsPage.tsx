@@ -107,7 +107,7 @@ export function DocsPage() {
           <Section id="admin" title="Admin API">
             <P>
               The endpoints this dashboard uses, under <Code>/v1/admin/*</Code>. Auth is a JWT from{' '}
-              <Code>POST /v1/admin/login</Code> (or the legacy <Code>x-admin-token</Code> header for key management).
+              <Code>POST /v1/admin/login</Code>.
             </P>
             <Endpoint method="POST" path="/v1/admin/login" note="{ email, password } → { token }" />
             <Endpoint method="GET" path="/v1/admin/me" />

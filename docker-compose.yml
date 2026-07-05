@@ -1,39 +1,35 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# frdcmp-infra — combined infrastructure stack
+# clicklog — log ingestion stack
 #
-# One Compose project bringing up every shared backing service on a single host:
+# One Compose project, one job: receive events over HTTP and store them in
+# ClickHouse.
 #
-#   • clickhouse  — centralised logging store (one db + restricted user/project)
-#   • valkey      — broker / cache / locks (one ACL user + key prefix/service)
-#   • prometheus  — metrics scraper
-#   • grafana     — dashboards
+#   • ingest-api  — the ONLY entry point: validates + queues incoming events
+#   • valkey      — internal queue between ingest-api and ClickHouse
+#   • clickhouse  — the log store (one database per tenant)
+#   • frontend    — optional admin dashboard (compose profile: dashboard)
 #
-# All four share ONE bridge network (`frdcmp`), so anything co-located on this
-# host — including app stacks attached to this network — can reach them by
-# container name (clickhouse:8123, valkey:6379, prometheus:9090). External access
-# is still via the published ports below, bound to whatever interface you set in
-# .env (default 127.0.0.1; use the private-overlay IP in production, never a
-# public NIC).
+# Everything shares ONE bridge network (`clicklog`). Only ingest-api (and the
+# optional dashboard) publish a port — ClickHouse and Valkey are internal-only,
+# reachable solely by ingest-api. Published ports bind to whatever interface
+# you set in .env (default 127.0.0.1; use the private-overlay IP in production,
+# never a public NIC).
 #
 # Config & secrets live in ./.env (copy from .env.example). See README.md.
 # ─────────────────────────────────────────────────────────────────────────────
-name: frdcmp-infra
+name: clicklog
 
 services:
   # ── Centralised logging ClickHouse ──────────────────────────────────────────
   # One ClickHouse server holding log data for every project stack. Each project
   # gets its OWN database + `events` table, created on demand by the ingest-api
-  # gateway (which writes as the admin user). Apps never connect to CH directly.
+  # gateway. Apps never connect to CH directly.
+  # No auth: like valkey, CH publishes no port and is reachable only on the
+  # internal `clicklog` network — network isolation IS the access control.
   clickhouse:
-    container_name: frdcmp-clickhouse
+    container_name: clicklog-clickhouse
     image: clickhouse/clickhouse-server:24
     restart: unless-stopped
-    environment:
-      # Bootstrap admin user. The ingest-api gateway connects as this user to
-      # create each tenant's database + tables on demand.
-      - CLICKHOUSE_USER=${CLICKHOUSE_ADMIN_USER}
-      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_ADMIN_PASSWORD}
-      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
     ulimits:
       nofile:
         soft: 262144
@@ -54,42 +50,35 @@ services:
       - ./clickhouse/clickhouse/config.d/low-resources.xml:/etc/clickhouse-server/config.d/low-resources.xml:ro
       - ./clickhouse/clickhouse/config.d/network-and-logging.xml:/etc/clickhouse-server/config.d/network-and-logging.xml:ro
     healthcheck:
-      test: ["CMD", "clickhouse-client", "--user", "${CLICKHOUSE_ADMIN_USER}", "--password", "${CLICKHOUSE_ADMIN_PASSWORD}", "--query", "SELECT 1"]
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 30s
     networks:
-      - frdcmp
-    # NO published ports. ClickHouse is reachable ONLY on the internal `frdcmp`
+      - clicklog
+    # NO published ports. ClickHouse is reachable ONLY on the internal `clicklog`
     # network — in practice only by `ingest-api` (clickhouse:8123). Direct writes
     # from apps (on this or other hosts) are intentionally impossible: ALL event
     # data must enter through the ingest-api gateway, which enforces the event
     # standard. There is no direct-to-ClickHouse path and no fallback.
 
-  # ── Shared Valkey broker ─────────────────────────────────────────────────────
-  # One Valkey (Redis fork) server: central broker / cache / lock store. No real
-  # multi-db isolation, so tenancy is by KEY/CHANNEL PREFIX + ACL — each service
-  # is locked to `~<service>:*` keys and `&<service>:*` channels. ACL users are
-  # regenerated on every boot from VK_TENANTS by ./valkey/valkey/entrypoint.sh.
+  # ── Valkey (internal log queue) ──────────────────────────────────────────────
+  # Buffers accepted event batches for the ingest-api: the gateway XADDs onto
+  # the `ingest:events` stream and a background task drains it into ClickHouse.
+  # Used EXCLUSIVELY by ingest-api — no other clients, NO published port,
+  # reachable only on the internal `clicklog` network as valkey:6379.
   valkey:
-    container_name: frdcmp-valkey
+    container_name: clicklog-valkey
     image: valkey/valkey:8-alpine
     restart: unless-stopped
-    environment:
-      # Bootstrap admin = the `default` ACL user (full access). Used by the
-      # healthcheck and for ops/migration.
-      - VK_ADMIN_PASSWORD=${VK_ADMIN_PASSWORD}
-      # Consumed by entrypoint.sh to generate per-tenant ACL users (name:password …).
-      - VK_TENANTS=${VK_TENANTS}
-      # maxmemory cap, passed to valkey-server. Keep below mem_limit.
-      - VK_MAXMEMORY=${VK_MAXMEMORY:-768mb}
-    # entrypoint.sh builds the ACL file from VK_TENANTS, then execs valkey-server.
-    entrypoint: ["/bin/sh", "/entrypoint.sh"]
+    # No auth: valkey publishes no port and is reachable only on the internal
+    # `clicklog` network — network isolation IS the access control.
+    command: ["valkey-server", "/etc/valkey/valkey.conf",
+              "--maxmemory", "${VK_MAXMEMORY:-768mb}"]
     volumes:
       - ./valkey/valkey_data:/data
       - ./valkey/valkey/valkey.conf:/etc/valkey/valkey.conf:ro
-      - ./valkey/valkey/entrypoint.sh:/entrypoint.sh:ro
     ulimits:
       nofile:
         soft: 65536
@@ -99,20 +88,16 @@ services:
     memswap_limit: ${VK_MEM_LIMIT:-1g}
     cpus: ${VK_CPUS:-1}
     healthcheck:
-      # $$ escapes compose interpolation so the literal var reaches the shell.
-      test: ["CMD-SHELL", "valkey-cli --no-auth-warning -a \"$$VK_ADMIN_PASSWORD\" ping | grep -q PONG"]
+      test: ["CMD-SHELL", "valkey-cli ping | grep -q PONG"]
       interval: 15s
       timeout: 5s
       retries: 5
       start_period: 10s
     networks:
-      - frdcmp
-    # Publish ONLY the Valkey port, bound to VK_BIND. Default 127.0.0.1. In
-    # production set VK_BIND to the host's private-overlay IP so workers on OTHER
-    # hosts can reach it; stacks ON this host can use the internal name
-    # valkey:6379. NEVER bind to a public NIC. Auth is enforced by ACL.
-    ports:
-      - "${VK_BIND:-127.0.0.1}:${VK_EXT_PORT:-46004}:6379"
+      - clicklog
+    # NO published ports. Like ClickHouse, Valkey is reachable ONLY on the
+    # internal `clicklog` network — in practice only by `ingest-api`
+    # (valkey:6379). It is the gateway's queue, not a shared broker.
 
   # ── Ingest API (telemetry gateway) ───────────────────────────────────────────
   # Apps POST batches of events here with an API key (one key → one tenant). The
@@ -120,9 +105,9 @@ services:
   # background task drains them into each tenant's ClickHouse `events` table.
   # ClickHouse/Valkey credentials never leave this host — apps only hold a key.
   # API keys live in the `ingest.ingest_keys` ClickHouse table; mint/list/revoke
-  # via the admin endpoints (guarded by INGEST_ADMIN_TOKEN). See README.
+  # in the admin dashboard (JWT-guarded admin endpoints). See README.
   ingest-api:
-    container_name: frdcmp-ingest-api
+    container_name: clicklog-ingest-api
     build: ./ingest-api
     restart: unless-stopped
     depends_on:
@@ -132,14 +117,10 @@ services:
         condition: service_healthy
     environment:
       # Co-located stores, reached by service name on the internal network.
+      # Both are internal-only and unauthenticated (network isolation is the
+      # gate) — only this service can reach them.
       - CLICKHOUSE_URL=http://clickhouse:8123
-      - CLICKHOUSE_ADMIN_USER=${CLICKHOUSE_ADMIN_USER}
-      - CLICKHOUSE_ADMIN_PASSWORD=${CLICKHOUSE_ADMIN_PASSWORD}
-      # `default` ACL user (full access) — only the ingest service touches Valkey.
-      # NOTE: VK_ADMIN_PASSWORD must be URL-safe (no @ : / # in it).
-      - REDIS_URL=redis://default:${VK_ADMIN_PASSWORD}@valkey:6379
-      # Legacy static token for x-admin-token curl flows. Empty = that path off.
-      - INGEST_ADMIN_TOKEN=${INGEST_ADMIN_TOKEN}
+      - REDIS_URL=redis://valkey:6379
       # Admin dashboard: single seeded identity + HS256 JWT signing secret.
       # Empty JWT_SECRET disables /v1/admin/login (dashboard auth).
       - JWT_SECRET=${JWT_SECRET}
@@ -154,7 +135,7 @@ services:
       retries: 5
       start_period: 30s
     networks:
-      - frdcmp
+      - clicklog
     # Publish the ingest port, bound to INGEST_BIND. Default 127.0.0.1. In
     # production set INGEST_BIND to the host's private-overlay IP so apps on
     # OTHER hosts can POST events; apps ON this host can use ingest-api:8080.
@@ -169,7 +150,7 @@ services:
   #   Start with it:   docker compose --profile dashboard up -d
   #   Rebuild it:      docker compose --profile dashboard build frontend
   frontend:
-    container_name: frdcmp-frontend
+    container_name: clicklog-frontend
     build: ./frontend
     restart: unless-stopped
     profiles: ["dashboard"]
@@ -177,19 +158,13 @@ services:
       ingest-api:
         condition: service_healthy
     networks:
-      - frdcmp
+      - clicklog
     # Publish the dashboard, bound to FRONTEND_BIND. Default 127.0.0.1. In
     # production set FRONTEND_BIND to the host's private-overlay IP so admins on
     # OTHER hosts can reach it. NEVER bind to a public NIC (auth is a JWT only).
     ports:
       - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_EXT_PORT:-46006}:80"
 
-  # ── Monitoring (Prometheus + Grafana) — REMOVED for now ──────────────────────
-  # The prometheus + grafana services were removed from this stack. Their config
-  # still lives under ./monitoring/ so they can be restored later. To bring them
-  # back, re-add the two service blocks and the `prometheus_data` / `grafana_data`
-  # named volumes (see git history of this file).
-
 networks:
-  frdcmp:
+  clicklog:
     driver: bridge

@@ -45,7 +45,7 @@ export function LoginPage() {
           <span className="mx-auto mb-3 grid size-11 place-items-center rounded-xl bg-accent-600 text-lg font-bold text-white">
             f
           </span>
-          <h1 className="text-lg font-semibold text-zinc-900">frdcmp-infra admin</h1>
+          <h1 className="text-lg font-semibold text-zinc-900">clicklog admin</h1>
           <p className="text-sm text-zinc-500">Sign in to manage the ingest gateway.</p>
         </div>
 

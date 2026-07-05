@@ -40,7 +40,7 @@ function Brand() {
     <div className="flex items-center gap-2 px-2">
       <span className="grid size-7 place-items-center rounded-md bg-accent-600 text-sm font-bold text-white">f</span>
       <div className="leading-tight">
-        <div className="text-sm font-semibold text-zinc-900">frdcmp-infra</div>
+        <div className="text-sm font-semibold text-zinc-900">clicklog</div>
         <div className="text-[10px] uppercase tracking-wide text-zinc-400">admin</div>
       </div>
     </div>

@@ -13,10 +13,10 @@ your app ──POST /v1/events (Bearer <key>)──▶ ingest-api ──XADD─�
                                                                       │  (drain task)
                                                                       ▼
                                                        ClickHouse  <tenant>.events
-        └──────────────────────── all inside frdcmp-infra (<infra-host>) ────────────┘
+        └──────────────────────── all inside clicklog (one host)     ────────────┘
 ```
 
-- **Endpoint (prod):** `http://<overlay-ip>:46005` over the the private overlay overlay.
+- **Endpoint (prod):** `http://<infra-host>:46005` over the the private overlay overlay.
   On the same host, use the internal name `http://ingest-api:8080`.
 - The hop is plain HTTP, but the private overlay encrypts the overlay, and the port binds
   to the overlay IP only (never a public NIC). The API key is the second layer.
@@ -28,7 +28,7 @@ your app ──POST /v1/events (Bearer <key>)──▶ ingest-api ──XADD─�
 1. **Mint a key** for your tenant (see §4). You get an `ik_…` string, shown once.
 2. **Set two env vars** in the app:
    ```dotenv
-   TELEMETRY_INGEST_URL="http://<overlay-ip>:46005/v1/events"
+   TELEMETRY_INGEST_URL="http://<infra-host>:46005/v1/events"
    TELEMETRY_API_KEY="ik_…"
    ```
    On the same host as the infra you may use `http://ingest-api:8080/v1/events`.
@@ -40,7 +40,7 @@ If `TELEMETRY_INGEST_URL` is unset, an app should simply not send anything
 
 Quick smoke test:
 ```bash
-curl -s -X POST http://<overlay-ip>:46005/v1/events \
+curl -s -X POST http://<infra-host>:46005/v1/events \
   -H "Authorization: Bearer $TELEMETRY_API_KEY" \
   -H 'content-type: application/json' \
   -d '[{"category":"test","event_type":"smoke","severity":"info","message":"hello"}]'
@@ -74,8 +74,9 @@ default. Unknown fields are ignored (the insert uses
 catches up.
 
 ### Admin — key management
-All guarded by the `INGEST_ADMIN_TOKEN` (header `x-admin-token: <token>` or
-`Authorization: Bearer <token>`). Disabled if the token is unset.
+All guarded by a dashboard JWT (`Authorization: Bearer <jwt>` from
+`POST /v1/admin/login`). Normally you manage keys in the **admin dashboard**;
+the raw endpoints are:
 
 | Method | Path | Body | Returns |
 |--------|------|------|---------|
@@ -113,21 +114,25 @@ Send JSON objects with any subset of these fields — names match the columns:
 | `ip`, `user_agent` | string | client info |
 | `attributes` | string | free-form JSON blob — query later via `JSONExtract(attributes, ...)` |
 
-> Tip: set `server` per host (e.g. `<node>-app_three` vs a dev box) so you can
+> Tip: set `server` per host (e.g. `prod-1` vs a dev box) so you can
 > filter by origin. The app decides this value; nothing is inferred.
 
 ---
 
 ## 4. Onboard a new tenant
 
-The tenant id is the project name, used verbatim (matches the `*_TENANTS`
-convention used elsewhere in this repo).
+The tenant id is the project name, used verbatim.
 
-1. **Mint a key** — run on the infra host (admin token from `.env`):
+1. **Mint a key** — in the **admin dashboard** (API Keys page): enter the tenant
+   name + a label, and store the key now — it is shown once and not recoverable.
+   Or scripted, with a JWT (admin credentials from `.env`):
    ```bash
    cd ~/docker/frdcmp-infra && source .env
-   curl -s -X POST http://<overlay-ip>:46005/v1/admin/keys \
-     -H "x-admin-token: $INGEST_ADMIN_TOKEN" \
+   TOKEN=$(curl -s -X POST http://<infra-host>:46005/v1/admin/login \
+     -H 'content-type: application/json' \
+     -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" | jq -r .token)
+   curl -s -X POST http://<infra-host>:46005/v1/admin/keys \
+     -H "Authorization: Bearer $TOKEN" \
      -H 'content-type: application/json' \
      -d '{"tenant":"<name>","label":"<env / description>"}'
    # → {"id":"…","tenant":"<name>","key":"ik_…"}   ← store the key now, it is not recoverable
@@ -135,8 +140,6 @@ convention used elsewhere in this repo).
    The `<name>.events` table is created automatically on the first insert — no
    manual DDL needed. That's the only step — the gateway writes as admin, so the
    tenant needs no ClickHouse user of its own.
-
-No Valkey tenant is needed — the gateway is the only Valkey writer.
 
 **Per environment:** mint a **separate key per deployment** (e.g. one for prod,
 one for dev) with distinct labels, so you can revoke one without the other.
@@ -166,13 +169,13 @@ ALTER TABLE <tenant>.events
 
 ## 6. Query the logs
 
-Direct ClickHouse (admin), or wire a Grafana ClickHouse datasource at
-`<tenant>.events`:
+Apps use the read API (`GET /v1/events`, `GET /v1/stats` — same key that
+writes); admins use the dashboard's Logs page. For ad-hoc SQL, ClickHouse
+publishes no port, so query it from the infra host through the container:
 ```bash
-cd ~/docker/frdcmp-infra && source .env
-curl -s "http://<overlay-ip>:46003/?database=<tenant>" \
-  -u "$CLICKHOUSE_ADMIN_USER:$CLICKHOUSE_ADMIN_PASSWORD" \
-  --data-binary "SELECT category, event_type, count() n, max(ts) latest
+cd ~/docker/frdcmp-infra
+docker compose exec clickhouse clickhouse-client \
+  --database "<tenant>" --query "SELECT category, event_type, count() n, max(ts) latest
                  FROM events WHERE ts > now() - INTERVAL 1 HOUR
                  GROUP BY category, event_type ORDER BY latest DESC FORMAT PrettyCompact"
 ```
@@ -211,13 +214,12 @@ docker compose ps ingest-api                # status/health
 
 | var | purpose |
 |-----|---------|
-| `INGEST_ADMIN_TOKEN` | bearer token for `/v1/admin/keys` (empty = admin disabled) |
+| `JWT_SECRET` / `ADMIN_EMAIL` / `ADMIN_PASSWORD` | dashboard admin login + JWT signing (empty `JWT_SECRET` = admin disabled) |
 | `INGEST_BIND` | published bind IP (overlay IP in prod; default `127.0.0.1`) |
 | `INGEST_EXT_PORT` | published port (default `46005`) |
 | `INGEST_RUST_LOG` | log level (default `info`) |
-| `CLICKHOUSE_URL` | `http://clickhouse:8123` (internal) |
-| `CLICKHOUSE_ADMIN_USER` / `CLICKHOUSE_ADMIN_PASSWORD` | admin creds (provision + insert) |
-| `REDIS_URL` | `redis://default:<VK_ADMIN_PASSWORD>@valkey:6379` (must be URL-safe) |
+| `CLICKHOUSE_URL` | `http://clickhouse:8123` (internal-only store, no auth) |
+| `REDIS_URL` | `redis://valkey:6379` (internal-only queue, no auth) |
 
 **Internals:** stream `ingest:events` capped at ~5M (oldest dropped on overflow);
 drain reads in batches of 5000 / 2s block; a ClickHouse error leaves the batch
@@ -231,8 +233,8 @@ Valkey rather than losing events.
 | symptom | cause / fix |
 |---------|-------------|
 | `401` on POST | key wrong/revoked, or revoke not yet past the 60s cache. Re-check the key; mint a new one. |
-| `401` on admin | `INGEST_ADMIN_TOKEN` mismatch or unset on the server. |
+| `401` on admin | missing/expired JWT — log in again via the dashboard or `POST /v1/admin/login`. |
 | `accepted` > 0 but nothing in ClickHouse | check `docker compose logs ingest-api` for `insert … failed` (CH down) — events stay buffered in Valkey and flush when CH recovers. |
-| app can't reach the URL | not on the the private overlay overlay, or `INGEST_BIND` is loopback. Confirm `curl http://<overlay-ip>:46005/health`. |
+| app can't reach the URL | not on the the private overlay overlay, or `INGEST_BIND` is loopback. Confirm `curl http://<infra-host>:46005/health`. |
 | `server` column blank | the app isn't sending `server` — set it (and in app-three, pass `SERVER_NAME` to the backend container). |
 | events queued but app restarted | the in-app buffer is in-memory; a small number in flight can be lost on restart. Durable buffering starts at the gateway's Valkey. |

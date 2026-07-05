@@ -1,7 +1,7 @@
 //! Dashboard admin surface (`/v1/admin/*`).
 //!
 //! Auth: `login` is public; everything else requires `auth::require_admin` (a
-//! dashboard JWT or the legacy `x-admin-token`). Single-admin model — any valid
+//! dashboard JWT). Single-admin model — any valid
 //! token is fully authorized. Key CRUD lives in `handlers.rs`; this module adds
 //! login/me/tenants plus the admin (cross-tenant) read endpoints, which reuse the
 //! query builders in `read.rs`.

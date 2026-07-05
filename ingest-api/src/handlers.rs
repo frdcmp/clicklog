@@ -20,8 +20,6 @@ const MAX_REPORTED_ERRORS: usize = 20;
 pub struct State {
     pub keys: KeyStore,
     pub valkey: ConnectionManager,
-    /// Legacy static admin token (x-admin-token header) — kept for the README curl flows.
-    pub admin_token: String,
     pub ch: Ch,
     /// HS256 signing secret for dashboard JWTs.
     pub jwt_secret: String,
@@ -162,9 +160,8 @@ pub async fn ingest(
 
 // ── admin ───────────────────────────────────────────────────────────────────
 //
-// Authorization for all key endpoints is handled by `auth::require_admin`, which
-// accepts either a dashboard JWT (Authorization: Bearer) or the legacy static
-// `x-admin-token`. See auth.rs.
+// Authorization for all key endpoints is handled by `auth::require_admin`,
+// which requires a dashboard JWT (Authorization: Bearer). See auth.rs.
 
 #[derive(Deserialize)]
 pub struct MintReq {

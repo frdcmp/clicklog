@@ -1,9 +1,9 @@
-//! Minimal ClickHouse HTTP client (admin credentials, co-located server).
+//! Minimal ClickHouse HTTP client (co-located server).
 //!
-//! Talks to the shared ClickHouse over the internal docker network
-//! (`clickhouse:8123`) as the bootstrap admin user — it provisions per-tenant
-//! databases/tables on demand and inserts event batches, so it needs access
-//! management. Plain HTTP only; never crosses the overlay.
+//! Talks to ClickHouse over the internal docker network (`clickhouse:8123`) —
+//! it provisions per-tenant databases/tables on demand and inserts event
+//! batches. No credentials: ClickHouse publishes no port and this service is
+//! the only thing that can reach it. Plain HTTP only; never crosses the overlay.
 
 use reqwest::Client;
 
@@ -11,8 +11,6 @@ use reqwest::Client;
 pub struct Ch {
     client: Client,
     base: String,
-    user: String,
-    pass: String,
 }
 
 impl Ch {
@@ -21,8 +19,6 @@ impl Ch {
             client: Client::new(),
             base: std::env::var("CLICKHOUSE_URL")
                 .unwrap_or_else(|_| "http://clickhouse:8123".to_string()),
-            user: std::env::var("CLICKHOUSE_ADMIN_USER").unwrap_or_else(|_| "default".to_string()),
-            pass: std::env::var("CLICKHOUSE_ADMIN_PASSWORD").unwrap_or_default(),
         }
     }
 
@@ -31,7 +27,6 @@ impl Ch {
         let res = self
             .client
             .post(&self.base)
-            .basic_auth(&self.user, Some(&self.pass))
             .body(sql.to_string())
             .send()
             .await
@@ -46,7 +41,6 @@ impl Ch {
         let res = self
             .client
             .post(url)
-            .basic_auth(&self.user, Some(&self.pass))
             .body(sql.to_string())
             .send()
             .await
@@ -73,7 +67,6 @@ impl Ch {
         let res = self
             .client
             .post(url)
-            .basic_auth(&self.user, Some(&self.pass))
             .body(ndjson)
             .send()
             .await
@@ -88,7 +81,6 @@ impl Ch {
         let res = self
             .client
             .post(&self.base)
-            .basic_auth(&self.user, Some(&self.pass))
             .body(full)
             .send()
             .await
@@ -118,7 +110,6 @@ impl Ch {
         let res = self
             .client
             .post(url)
-            .basic_auth(&self.user, Some(&self.pass))
             .body(sql.to_string())
             .send()
             .await

@@ -2,9 +2,8 @@
 //!
 //! A single admin identity is seeded from env (`ADMIN_EMAIL` / `ADMIN_PASSWORD`).
 //! `POST /v1/admin/login` checks those credentials and issues an HS256 JWT; every
-//! other `/v1/admin/*` route (except login) accepts either that JWT in
-//! `Authorization: Bearer <jwt>` OR the legacy static `INGEST_ADMIN_TOKEN` in an
-//! `x-admin-token` header (so the README's curl flows keep working).
+//! other `/v1/admin/*` route (except login) requires that JWT in
+//! `Authorization: Bearer <jwt>`.
 //!
 //! This is intentionally a single-tenant admin model: any valid token is fully
 //! authorized. There are no per-scope checks.
@@ -58,40 +57,14 @@ fn bearer(req: &HttpRequest) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
-/// Constant-time-ish string comparison for the static admin token. (Length leak
-/// is acceptable here; this is a single-admin dev/overlay-only surface.)
-fn eq_secret(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.bytes().zip(b.bytes()) {
-        diff |= x ^ y;
-    }
-    diff == 0
-}
-
-/// Authorize an `/v1/admin/*` request. Accepts EITHER a valid dashboard JWT in
-/// `Authorization: Bearer` OR the static `INGEST_ADMIN_TOKEN` in `x-admin-token`.
-/// Returns the resolved admin email on success, or a 401 response to return.
+/// Authorize an `/v1/admin/*` request: requires a valid dashboard JWT in
+/// `Authorization: Bearer`. Returns the admin email on success, or a 401
+/// response to return.
 pub fn require_admin(req: &HttpRequest, state: &State) -> Result<String, HttpResponse> {
-    // 1) JWT via Authorization: Bearer.
     if !state.jwt_secret.is_empty() {
         if let Some(tok) = bearer(req) {
             if let Ok(claims) = verify_token(&tok, &state.jwt_secret) {
                 return Ok(claims.sub);
-            }
-        }
-    }
-    // 2) Legacy static admin token via x-admin-token (backward compat).
-    if !state.admin_token.is_empty() {
-        let presented = req
-            .headers()
-            .get("x-admin-token")
-            .and_then(|v| v.to_str().ok());
-        if let Some(p) = presented {
-            if eq_secret(p, &state.admin_token) {
-                return Ok(state.admin_email.clone());
             }
         }
     }

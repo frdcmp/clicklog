@@ -1,124 +1,83 @@
-# frdcmp-infra
+# clicklog
 
-**Shared infrastructure services for the frdcmp project stacks.**
+**Centralised log ingestion: apps POST events, clicklog validates, queues, and
+stores them in ClickHouse.**
 
-The backing services that every app stack (`app_one`, `app_two`, and
-future projects) plugs into, kept in one repo so the conventions for connecting
-to them live in one place:
+One pipeline, one entry point. Every app stack (`app_one`, `app_two`,
+and future projects) ships its telemetry here with nothing but a URL and an API
+key:
+
+```
+app ──POST /v1/events (Bearer <key>)──▶ ingest-api ──▶ valkey queue ──▶ ClickHouse <tenant>.events
+```
 
 | Service | Role | Container port | Default host port | Docs |
 |---------|------|----------------|-------------------|------|
-| `clickhouse` | Centralised **logging** store — one database per project | `8123` (HTTP) | **none (internal-only)** | [README](clickhouse/README.md) |
-| `valkey` | Shared **broker / cache / locks** (Redis Streams + Pub/Sub) — one ACL user + key prefix per service | `6379` | `46004` | [README](valkey/README.md) |
-| `ingest-api` | **The only way to write logs** — gateway that validates events against the standard and drains them to ClickHouse | `8080` | `46005` | (this README) |
+| `ingest-api` | **The only entry point** — validates events against the standard, queues them, drains them to ClickHouse | `8080` | `46005` | [README](ingest-api/README.md) |
+| `valkey` | **Internal queue** — buffers accepted events between ingest-api and ClickHouse. Used exclusively by ingest-api | `6379` | **none (internal-only)** | [README](valkey/README.md) |
+| `clickhouse` | **The log store** — one database per project | `8123` (HTTP) | **none (internal-only)** | [README](clickhouse/README.md) |
 
-> **Logging is gateway-only.** ClickHouse no longer publishes a host port — it is
-> reachable only on the internal `frdcmp` network, in practice only by
-> `ingest-api`. Apps **cannot** write to ClickHouse directly; all event data must
-> go through `POST /v1/events`, which enforces the event standard and rejects
-> anything off-spec. There is no fallback.
->
-> **Monitoring (Prometheus + Grafana) was removed for now** — config is kept
-> under `./monitoring/` and can be restored from this file's git history.
+> **Everything is gateway-only.** Neither ClickHouse nor Valkey publishes a host
+> port — both are reachable only on the internal `clicklog` network, in practice
+> only by `ingest-api`. Apps **cannot** write to ClickHouse or touch the queue
+> directly; all event data must go through `POST /v1/events`, which enforces the
+> event standard and rejects anything off-spec. There is no fallback.
 
-All four services run from **one combined Docker Compose stack** at the repo
-root (`docker-compose.yml` + `.env`), sharing a single `frdcmp` bridge network.
-They come up and down together on **one host**. Anything co-located on that host
-(including app stacks attached to the `frdcmp` network) can reach them by
-container name — `clickhouse:8123`, `valkey:6379`, `prometheus:9090` — with no
-overlay hop. Each service keeps its own config/data subfolder and README.
+The services run from **one combined Docker Compose stack** at the repo root
+(`docker-compose.yml` + `.env`), sharing a single `clicklog` bridge network.
+They come up and down together on **one host**. Each service keeps its own
+config/data subfolder and README.
 
 ---
 
 ## Deployment topology (fill in per environment)
 
-The whole stack runs on **one host** (all services share the `frdcmp` network).
+The whole stack runs on **one host** (all services share the `clicklog` network).
 What interface each published port binds to and which port it uses are set in
 the single root `.env` — not baked into the repo. Record your actual layout here.
 
 | Service | Bind interface | Endpoint | `.env` knobs |
 |---------|----------------|----------|--------------|
-| clickhouse | _overlay IP_ | `http://<ip>:46003` | `CLICKHOUSE_BIND`, `CLICKHOUSE_EXT_PORT` |
-| valkey | _overlay IP_ | `<ip>:46004` | `VK_BIND`, `VK_EXT_PORT` |
-| prometheus / grafana | _host_ | Grafana `http://<ip>:3001`, Prom `:9090` | `GRAFANA_ROOT_URL`, `*_EXT_PORT` |
+| ingest-api | _overlay IP_ | `http://<ip>:46005` | `INGEST_BIND`, `INGEST_EXT_PORT` |
+| frontend (dashboard, optional) | _overlay IP_ | `http://<ip>:46006` | `FRONTEND_BIND`, `FRONTEND_EXT_PORT` |
+| clickhouse | — | internal-only (`clickhouse:8123`) | — |
+| valkey | — | internal-only (`valkey:6379`) | — |
 
 **Networking & security model:**
 
-- Each service publishes **one** port, bound to whatever interface you set
-  (`*_BIND`). Put them on a **private overlay** (the stacks here use the private overlay)
-  and **never** bind to a public NIC.
-- Auth is always on: ClickHouse per-tenant users, Valkey per-tenant ACL
-  passwords, Grafana admin login. The native/internal protocols (ClickHouse
-  TCP `9000`) stay inside the container network.
-- A stack on **another** host connects via the overlay IP:port. A stack on
-  **this** host can attach to the `frdcmp` network and use the container name
-  directly — no overlay hop, no published-port round-trip.
+- Only `ingest-api` (and the optional dashboard) publish a port, bound to
+  whatever interface you set (`*_BIND`). Put them on a **private overlay** (the
+  stacks here use the private overlay) and **never** bind to a public NIC.
+- ClickHouse and Valkey publish **nothing** — they live entirely on the internal
+  `clicklog` network, credentialed and reachable only by `ingest-api`.
+- Auth is always on: apps authenticate to the gateway with an API key; the
+  dashboard with a JWT login.
 
 ---
 
 ## The tenant model (how isolation works)
 
-Both data stores are **multi-tenant**: one shared server, carved up per
-project. The tenant id is the **project/service name**, and it's the same
-string everywhere — database name, ACL user, key prefix. Keep it consistent.
+ClickHouse is **multi-tenant**: one shared server, carved up per project. The
+tenant id is the **project name** — it names both the ClickHouse database and
+the API key's scope. Keep it consistent everywhere.
 
-| | ClickHouse | Valkey |
-|--|-----------|--------|
-| Isolation unit | a **database** per project | a **key/channel prefix** per service (`<svc>:*`) |
-| Identity | an **ingest API key** per project (gateway writes as admin) | an **ACL user** locked to `~<svc>:* &<svc>:*` |
-| Configured via | a key minted into `ingest.ingest_keys` (see ingest-api) | `VK_TENANTS` = `name:password` pairs |
-| Provisioned | DB + `events` table auto-created by the gateway on first write | ACL file rebuilt from env on every boot |
+| | ClickHouse |
+|--|-----------|
+| Isolation unit | a **database** per project |
+| Identity | an **ingest API key** per project (only the gateway can reach ClickHouse) |
+| Configured via | a key minted into `ingest.ingest_keys` (see ingest-api) |
+| Provisioned | DB + `events` table auto-created by the gateway on first write |
 
-> Valkey numbered DBs do **not** isolate tenants (Pub/Sub is global, no per-DB
-> auth) — isolation is by prefix + ACL. See [valkey/README.md](valkey/README.md).
-> ClickHouse keys/streams must follow the mandatory naming standard there.
-
----
-
-## How an app stack connects to all three
-
-**Logging goes through the ingest-api gateway only** — apps no longer get
-ClickHouse credentials (the port is closed). For **broker / cache / locks** apps
-still connect to Valkey directly with **tenant** credentials (never admin ones).
-Once wired up, **drop that repo's own clickhouse/redis services**. Example for
-`app_one` (substitute your deployment's IPs/ports and the passwords from
-`VK_TENANTS`):
-
-```dotenv
-# ── Logging → ingest-api gateway (NOT direct ClickHouse) ──────────────
-TELEMETRY_INGEST_URL="http://<infra-host>:46005/v1/events"
-TELEMETRY_API_KEY="ik_…"           # one key → one tenant; mint via admin endpoint
-# Events MUST conform to the standard schema below or they are rejected (400).
-
-# ── Valkey (broker / cache / locks) ───────────────────────────────────
-REDIS_HOST="<infra-host>"
-REDIS_PORT="46004"
-REDIS_USER="app_one"           # ACL username == key prefix
-REDIS_PASSWORD="<from VK_TENANTS>"
-# url form: redis://app_one:<pw>@<infra-host>:46004
-# all keys/streams/channels MUST start with  app_one:
-```
-
-Onboarding a new project:
-
-1. **Logging** — mint an ingest API key for the tenant (see below). The tenant's
-   ClickHouse database + `events` table are created automatically on first write
-   (the gateway writes as admin internally). Nothing else to configure.
-2. **Valkey** (only if the app needs broker/cache/locks) — add a `name:password`
-   pair to `VK_TENANTS` (that `name` becomes the mandatory key prefix).
-
-(Use the **same** project name everywhere.) See each service's README for the
-add-a-tenant-live commands when the stack is already running.
+Valkey has **no tenants** — it is the gateway's private queue, not a shared
+store. See [valkey/README.md](valkey/README.md).
 
 ---
 
-## Logging via the ingest API (recommended)
+## How an app connects
 
-The direct-Valkey/ClickHouse wiring above couples each app repo to the infra
-(it needs the `redis` + ClickHouse clients, a `logs-worker`, and tenant
-credentials). For **logging**, prefer the `ingest-api` gateway instead: apps
-hold **only an API key + a URL** and POST event batches. The queue and the
-drain-to-ClickHouse worker live here, so app repos stay clean and publishable.
+Apps hold **only an API key + a URL** and POST event batches. The queue and the
+drain-to-ClickHouse worker live here, so app repos stay clean and publishable —
+no ClickHouse client, no Redis client, no logs-worker.
 
 ```
 app ──POST /v1/events (Bearer <key>)──▶ ingest-api ──▶ Valkey ingest:events ──▶ (drain) ──▶ ClickHouse <tenant>.events
@@ -131,16 +90,13 @@ TELEMETRY_INGEST_URL="http://<infra-host>:46005/v1/events"   # or ingest-api:808
 TELEMETRY_API_KEY="ik_…"                                     # one key → one tenant
 ```
 
-**Onboarding a project for logging** (no Valkey tenant needed — the gateway is
-the only Valkey client): mint a key, set two env vars, POST events.
+**Onboarding a project**: mint a key, set two env vars, POST events. The
+tenant's ClickHouse database + `events` table are created automatically on
+first write — nothing else to configure.
 
-```bash
-curl -s -X POST http://<overlay-ip>:46005/v1/admin/keys \
-  -H "x-admin-token: $INGEST_ADMIN_TOKEN" \
-  -H 'content-type: application/json' \
-  -d '{"tenant":"app_three","label":"app-three prod"}'
-# → {"id":"…","tenant":"app_three","key":"ik_…"}   ← shown once, store it
-```
+Keys are minted in the **admin dashboard** (API Keys page — the key is shown
+once, store it). For scripted flows, log in for a JWT and hit the same admin
+API the dashboard uses (see [ingest-api/README.md](ingest-api/README.md)).
 
 📖 **Full guide — HTTP API, event schema, key management, retention,
 integration, ops & troubleshooting: [ingest-api/README.md](ingest-api/README.md).**
@@ -168,9 +124,7 @@ Do this in the app, smallest first:
 
 An app-side **durable** (Redis) queue is only warranted if losing a few seconds
 of logs during a gateway/network blip is unacceptable — rare for telemetry, and
-the right fix then is gateway HA, not a queue in every app. (Apps still use the
-shared Valkey for their *real* broker/cache/lock needs — that's separate from
-logging.)
+the right fix then is gateway HA, not a queue in every app.
 
 ### The event standard (enforced — no fallback)
 
@@ -229,13 +183,12 @@ curl -H "x-api-key: ik_…" "$URL/v1/stats?from=-30d&group_by=model&metric=sum:t
 The whole stack comes up from one compose file at the repo root:
 
 ```bash
-cp .env.example .env        # then edit: strong passwords + bind IP + tenants
+cp .env.example .env        # then edit: strong passwords + bind IP
 docker compose up -d
 docker compose logs -f
 
 # operate one service at a time when needed:
-docker compose up -d clickhouse valkey
-docker compose restart grafana
+docker compose restart ingest-api
 docker compose logs -f clickhouse
 ```
 
@@ -244,15 +197,14 @@ docker compose logs -f clickhouse
 ## Layout
 
 ```
-frdcmp-infra/
+clicklog/
 ├── README.md            ← you are here: the connection conventions
 ├── docker-compose.yml   ← the combined stack (all four services)
 ├── .env / .env.example  ← single env for the whole stack
-├── clickhouse/          ← logging store: config.d/, init/, README, data dirs
-├── valkey/              ← broker/cache/locks: valkey.conf, entrypoint.sh, README
+├── clickhouse/          ← log store: config.d/, init/, README, data dirs
+├── valkey/              ← internal log queue: valkey.conf, README, data dir
 ├── ingest-api/          ← telemetry gateway (Rust): src/, Dockerfile, README
-├── frontend/            ← admin dashboard (React+nginx, profile: dashboard), README
-└── monitoring/          ← Prometheus + Grafana: prometheus.yml, grafana/, README
+└── frontend/            ← admin dashboard (React+nginx, profile: dashboard), README
 ```
 
 > **Admin dashboard (optional):** a React UI for API-key CRUD, cross-tenant log
