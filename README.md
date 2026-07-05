@@ -135,6 +135,9 @@ nothing off-spec ever reaches ClickHouse. The contract lives in
 table in [`ingest-api/src/ch.rs`](ingest-api/src/ch.rs).
 
 - **Required** (non-empty strings): `category`, `event_type`.
+- **Soft-required: `route`** on any request/operation-scoped event — the HTTP
+  path (`/api/v1/orders`) or a logical operation name (`worker:email_send`).
+  Not validated, but it's a dashboard column and a server-side filter — set it.
 - **No unknown fields.** Anything not in the standard is rejected — put custom
   data inside the `attributes` field (a JSON **string**).
 - **String fields:** `source`, `category`, `event_type`, `severity`, `user_id`,

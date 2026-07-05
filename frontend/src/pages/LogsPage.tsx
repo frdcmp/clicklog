@@ -286,6 +286,7 @@ function ResultsTable({
               {showTenant && <th className="px-3 py-2.5 font-medium">Tenant</th>}
               <th className="px-3 py-2.5 font-medium">Sev</th>
               <th className="px-3 py-2.5 font-medium">Category / Type</th>
+              <th className="px-3 py-2.5 font-medium">Route</th>
               <th className="px-3 py-2.5 font-medium">Message</th>
               <th className="px-3 py-2.5 font-medium">HTTP</th>
               <th className="px-3 py-2.5 font-medium">ms</th>
@@ -312,6 +313,7 @@ function ResultsTable({
                   <span className="text-zinc-300"> / </span>
                   {e.event_type}
                 </td>
+                <td className="max-w-[16rem] truncate px-3 py-2 font-mono text-xs text-zinc-600">{e.route || '—'}</td>
                 <td className="max-w-md truncate px-3 py-2 text-zinc-700">{e.message || '—'}</td>
                 <td className="px-3 py-2">
                   <StatusBadge status={Number(e.http_status)} />
@@ -337,6 +339,7 @@ function ResultsTable({
             <div className="mt-1 truncate text-sm text-zinc-700">{e.message || `${e.category} / ${e.event_type}`}</div>
             <div className="mt-0.5 flex items-center gap-2 text-xs text-zinc-400">
               <span>{e.category} / {e.event_type}</span>
+              {e.route ? <span className="truncate font-mono">{e.route}</span> : null}
               {Number(e.http_status) > 0 && <StatusBadge status={Number(e.http_status)} />}
             </div>
           </li>

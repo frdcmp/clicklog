@@ -117,6 +117,14 @@ Send JSON objects with any subset of these fields — names match the columns:
 > Tip: set `server` per host (e.g. `prod-1` vs a dev box) so you can
 > filter by origin. The app decides this value; nothing is inferred.
 
+**Soft-required: `route`.** Any event tied to a request or operation **should**
+set `route` — the HTTP path (`/api/v1/orders`) or a logical operation name for
+non-HTTP work (`worker:email_send`). It's a first-class column in the dashboard
+Logs table and a server-side filter/`group_by` dimension; events without it are
+much harder to locate later. For `http` events, also set `http_status` +
+`duration_ms`. (Not validated — the batch is still accepted without it — but
+treat it as part of the standard.)
+
 ---
 
 ## 4. Onboard a new tenant

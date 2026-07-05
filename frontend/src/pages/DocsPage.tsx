@@ -60,6 +60,13 @@ export function DocsPage() {
               events/batch).
             </P>
             <FieldTable />
+            <Callout>
+              <b>Soft-required: <Code>route</Code>.</b> Any event tied to a request or operation should set{' '}
+              <Code>route</Code> — the HTTP path (<Code>/api/v1/orders</Code>) or a logical operation name
+              (<Code>worker:email_send</Code>). It's a column in the Logs table and a server-side filter; events
+              without it are much harder to find later. For http events also set <Code>http_status</Code> +{' '}
+              <Code>duration_ms</Code>.
+            </Callout>
             <P className="mt-3">Example valid event:</P>
             <Pre>{`{
   "category": "http",
@@ -161,7 +168,7 @@ const FIELDS: FieldRow[] = [
   { name: 'entity_type / entity_id', type: 'string', notes: 'Domain object touched.' },
   { name: 'error_code', type: 'string', notes: 'Machine error code.' },
   { name: 'model', type: 'string', notes: 'LLM/model name.' },
-  { name: 'route / app_version', type: 'string', notes: 'HTTP route, app version.' },
+  { name: 'route / app_version', type: 'string', notes: 'Route: soft-required — HTTP path or operation name. App version.' },
   { name: 'server / ip / user_agent', type: 'string', notes: 'Origin metadata.' },
   { name: 'tokens_input / tokens_output', type: 'uint32', notes: 'Token counts (≥ 0).' },
   { name: 'duration_ms', type: 'uint32', notes: 'Elapsed ms.' },
