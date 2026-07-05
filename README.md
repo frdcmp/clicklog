@@ -50,7 +50,7 @@ the single root `.env` — not baked into the repo. Record your actual layout he
 
 - Only `ingest-api` (and the optional dashboard) publish a port, bound to
   whatever interface you set (`*_BIND`). Put them on a **private overlay** (the
-  stacks here use the private overlay) and **never** bind to a public NIC.
+  stacks here use one) and **never** bind to a public NIC.
 - ClickHouse and Valkey publish **nothing** — they live entirely on the internal
   `clicklog` network, credentialed and reachable only by `ingest-api`.
 - Auth is always on: apps authenticate to the gateway with an API key; the

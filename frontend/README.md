@@ -37,7 +37,7 @@ docker compose --profile dashboard up -d            # brings up the whole stack 
 ```
 
 Env knobs (root `.env`): `FRONTEND_BIND`, `FRONTEND_EXT_PORT`. In production bind to
-the private-overlay IP (e.g. the host's the private overlay IP), never a public NIC — the
+the host's private-overlay IP, never a public NIC — the
 only auth is the admin JWT. Ensure `JWT_SECRET` and a strong `ADMIN_PASSWORD` are
 set for the ingest-api before deploying.
 

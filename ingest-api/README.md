@@ -16,9 +16,9 @@ your app ──POST /v1/events (Bearer <key>)──▶ ingest-api ──XADD─�
         └──────────────────────── all inside clicklog (one host)     ────────────┘
 ```
 
-- **Endpoint (prod):** `http://<infra-host>:46005` over the the private overlay overlay.
+- **Endpoint (prod):** `http://<infra-host>:46005` over the private overlay.
   On the same host, use the internal name `http://ingest-api:8080`.
-- The hop is plain HTTP, but the private overlay encrypts the overlay, and the port binds
+- The hop is plain HTTP, but the overlay encrypts it, and the port binds
   to the overlay IP only (never a public NIC). The API key is the second layer.
 
 ---
@@ -243,6 +243,6 @@ Valkey rather than losing events.
 | `401` on POST | key wrong/revoked, or revoke not yet past the 60s cache. Re-check the key; mint a new one. |
 | `401` on admin | missing/expired JWT — log in again via the dashboard or `POST /v1/admin/login`. |
 | `accepted` > 0 but nothing in ClickHouse | check `docker compose logs ingest-api` for `insert … failed` (CH down) — events stay buffered in Valkey and flush when CH recovers. |
-| app can't reach the URL | not on the the private overlay overlay, or `INGEST_BIND` is loopback. Confirm `curl http://<infra-host>:46005/health`. |
+| app can't reach the URL | not on the private overlay, or `INGEST_BIND` is loopback. Confirm `curl http://<infra-host>:46005/health`. |
 | `server` column blank | the app isn't sending `server` — set it (e.g. pass a `SERVER_NAME` env var to the app container). |
 | events queued but app restarted | the in-app buffer is in-memory; a small number in flight can be lost on restart. Durable buffering starts at the gateway's Valkey. |
