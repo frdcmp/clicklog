@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { PageHeader } from '../components/layout/PageHeader'
 import { Card, StatCard } from '../components/ui/Card'
+import { CopyButton } from '../components/ui/CopyButton'
 import { Spinner } from '../components/ui/Feedback'
 import { SeverityBadge } from '../components/ui/Badge'
 import { useTenants } from '../query/tenants'
@@ -35,6 +36,8 @@ export function DashboardPage() {
   return (
     <div>
       <PageHeader title="Dashboard" description="Overview of the ingest gateway across all tenants (last 24h)." />
+
+      <LlmGuideBanner />
 
       <div className="grid grid-cols-2 gap-3 sm:gap-4 lg:grid-cols-4">
         <StatCard label="Events · 24h" value={bySeverity.isLoading ? '…' : fmtNumber(totalEvents)} />
@@ -84,6 +87,34 @@ export function DashboardPage() {
         </Card>
       </div>
     </div>
+  )
+}
+
+// Copy-paste onboarding: hand this URL to any coding agent and it has the full
+// client integration guide (served from frontend/public/llms.txt).
+function LlmGuideBanner() {
+  const url = `${window.location.origin}/llms.txt`
+  return (
+    <Card className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-accent-100 bg-accent-50 p-4">
+      <div className="min-w-0 flex-1">
+        <h2 className="text-sm font-semibold text-zinc-800">Implementing telemetry with an LLM?</h2>
+        <p className="mt-0.5 text-xs text-zinc-500">
+          Paste this link to any coding agent — a self-contained guide to the event standard, client
+          rules, and smoke tests. Add your ingest URL + API key and it can do the rest.
+        </p>
+      </div>
+      <div className="flex items-center gap-2">
+        <a
+          href={url}
+          target="_blank"
+          rel="noreferrer"
+          className="rounded border border-accent-100 bg-white px-2 py-1 font-mono text-xs text-accent-700 hover:underline"
+        >
+          {url}
+        </a>
+        <CopyButton text={url} label="Copy link" />
+      </div>
+    </Card>
   )
 }
 

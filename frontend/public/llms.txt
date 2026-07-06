@@ -1,0 +1,144 @@
+# clicklog — LLM integration guide
+
+You are helping a developer add telemetry to their application. The telemetry
+backend is **clicklog**, a centralised log-ingestion gateway. Read this whole
+document, then implement event emission in their codebase following the rules
+below. Everything you need is here — you do not need access to the clicklog
+repo or infrastructure.
+
+## What clicklog is (30 seconds)
+
+Apps POST JSON event batches to a single HTTP endpoint with an API key. The
+gateway validates each event against a strict schema, queues it, and stores it
+in ClickHouse — one isolated database per project. Queuing, durability,
+retries, and storage are all the gateway's job. **The client is just an HTTP
+POST.** No SDK, no ClickHouse client, no Redis, no local queue, no worker.
+
+```
+your app ──POST /v1/events (Bearer <key>)──▶ clicklog gateway ──▶ ClickHouse
+```
+
+## What to ask the developer for
+
+Two values, delivered as environment variables (use these exact names unless
+the project has a different convention):
+
+```dotenv
+TELEMETRY_INGEST_URL="http://<infra-host>:46005/v1/events"
+TELEMETRY_API_KEY="ik_…"
+```
+
+The key is minted per project in the clicklog admin dashboard; the developer
+already has it or knows how to get one.
+
+## Client rules (non-negotiable)
+
+1. **Fire-and-forget.** POST the event(s) and move on. Never let telemetry
+   block a request path or crash the app. On a failed POST: drop the events,
+   optionally log a local warning. Do not build retry loops or local queues —
+   durability lives in the gateway.
+2. **Unset URL = telemetry off.** If `TELEMETRY_INGEST_URL` is not set, emit
+   nothing and never error. The gateway must never be a hard dependency.
+3. **Batching is optional.** Single object, JSON array, or NDJSON — up to
+   1000 events per request, body ≤ 8 MiB. Sending once per event is fine;
+   coalescing to ~1 request/second is a nice-to-have.
+4. **Auth header:** `Authorization: Bearer $TELEMETRY_API_KEY`
+   (or `x-api-key: $TELEMETRY_API_KEY`).
+5. **Responses:** `202 {"accepted": N}` on success · `400` = schema violation
+   (whole batch rejected, response body lists per-event errors) · `401` = bad
+   key · `413` = >1000 events · `503` = queue down. Treat all failures per
+   rule 1: drop and continue.
+
+## The event schema (strictly enforced — off-spec batches get 400)
+
+An event is a flat JSON object. **Only the fields below are allowed. Any
+unknown field rejects the whole batch** — custom data goes inside
+`attributes`, which is a JSON **string** (stringified object), not a nested
+object.
+
+| field | type | meaning |
+|-------|------|---------|
+| `category` | string, **required** | coarse class: `http`, `auth`, `db`, `llm`, `job`, `log`, or a domain area |
+| `event_type` | string, **required** | specific action: `GET`, `login_failed`, `created`, `email_sent` |
+| `severity` | string | one of `debug` / `info` / `warn` / `error` (exactly these) |
+| `route` | string | **set on every request/operation-scoped event** — HTTP path (`/api/v1/orders`) or logical op name (`worker:email_send`). Not validated, but it is a first-class dashboard column and filter; events without it are hard to find later |
+| `ts` | string or epoch number | event time, RFC3339 or `YYYY-MM-DD HH:MM:SS.mmm` UTC; defaults to ingest time if omitted |
+| `event_id` | string | optional; must be a UUID if set |
+| `source` | string | which process emitted: `backend`, `frontend`, worker name |
+| `server` | string | which host/deployment: `prod-1`, dev box name — set it from an env var so environments are distinguishable |
+| `app_version` | string | build/release identifier |
+| `user_id`, `user_email` | string | acting user, whenever a user context exists |
+| `session_id`, `request_id` | string | correlation ids — set `request_id` on everything request-scoped |
+| `entity_type`, `entity_id` | string | the affected resource, e.g. `"note"` / `"<uuid>"` |
+| `message` | string | free text — always set it on `severity=error` |
+| `error_code` | string | machine-readable failure tag |
+| `model` | string | LLM model name (for `llm` events) |
+| `tokens_input`, `tokens_output` | non-negative int | LLM token counts |
+| `duration_ms` | non-negative int (UInt32) | operation duration — set on anything timed, not just HTTP |
+| `http_status` | non-negative int (UInt16) | response status (for `http` events) |
+| `ip`, `user_agent` | string | client info |
+| `attributes` | string | free-form **stringified JSON** for everything custom |
+
+Example valid events:
+
+```json
+{"category":"http","event_type":"GET","severity":"info","route":"/widgets/summary","http_status":200,"duration_ms":12,"source":"backend","server":"prod-1","request_id":"req-abc","attributes":"{\"region\":\"eu\"}"}
+```
+
+```json
+{"category":"llm","event_type":"completion","severity":"info","route":"/api/chat","model":"claude-sonnet-5","tokens_input":812,"tokens_output":304,"duration_ms":2210,"source":"backend","server":"prod-1"}
+```
+
+## What to instrument (in priority order)
+
+1. **HTTP requests** — one event per request from middleware: `category=http`,
+   `event_type=<METHOD>`, `route`, `http_status`, `duration_ms`, `request_id`,
+   plus `user_id`/`user_email` when authenticated. Skip health checks.
+2. **Errors** — every unhandled exception / 5xx: `severity=error`, a `message`,
+   `error_code` where meaningful.
+3. **Domain events** — the actions the business cares about (signup, order
+   created, email sent): `category=<domain>`, `event_type=<action>`,
+   `entity_type`/`entity_id`.
+4. **LLM calls** — `category=llm` with `model`, `tokens_input`,
+   `tokens_output`, `duration_ms`.
+5. **Background jobs** — `route` as a logical name (`worker:email_send`),
+   `duration_ms`, outcome severity.
+
+On every event, set `source`, `server` (from an env var like `SERVER_NAME`),
+and `app_version` centrally in one small emit helper, so call sites only pass
+what varies.
+
+## Implementation shape
+
+Write one tiny module (~30–60 lines in most languages), no dependencies beyond
+an HTTP client:
+
+- `emit(event)` / `emit_many(events)`: merge in the base fields
+  (`source`, `server`, `app_version`, `ts`), POST asynchronously
+  (background task / fire-and-forget promise / goroutine), swallow errors.
+- If `TELEMETRY_INGEST_URL` is unset, the functions are no-ops.
+- Then wire it into middleware / error handler / the call sites above.
+
+## Verify it works
+
+Smoke test (expects `{"accepted":1}`):
+
+```bash
+curl -s -X POST "$TELEMETRY_INGEST_URL" \
+  -H "Authorization: Bearer $TELEMETRY_API_KEY" \
+  -H 'content-type: application/json' \
+  -d '[{"category":"test","event_type":"smoke","severity":"info","message":"hello","source":"backend","server":"dev"}]'
+```
+
+Read events back with the **same key** (base URL = ingest URL without
+`/v1/events`):
+
+```bash
+# recent events
+curl -s -H "x-api-key: $TELEMETRY_API_KEY" "$BASE/v1/events?from=-1h&limit=20"
+# counts by event_type over the last day
+curl -s -H "x-api-key: $TELEMETRY_API_KEY" "$BASE/v1/stats?from=-24h&group_by=event_type"
+```
+
+A `400` response lists exactly which event and field violated the schema —
+fix and resend; nothing partial is stored.

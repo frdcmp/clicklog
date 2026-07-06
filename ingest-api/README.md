@@ -69,9 +69,9 @@ Ingest a batch of events.
   `401` (bad key) · `413` (too many) · `503` (queue unavailable).
 
 Only the fields you set are sent; everything else falls back to a column
-default. Unknown fields are ignored (the insert uses
-`input_format_skip_unknown_fields=1`), so you can add fields before the schema
-catches up.
+default. **Unknown fields are rejected** — validation returns `400` for any
+field outside the standard (custom data belongs inside the `attributes` JSON
+string), and the whole batch is refused.
 
 ### Admin — key management
 All guarded by a dashboard JWT (`Authorization: Bearer <jwt>` from

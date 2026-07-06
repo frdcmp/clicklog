@@ -104,6 +104,21 @@ API the dashboard uses (see [ingest-api/README.md](ingest-api/README.md)).
 📖 **Full guide — HTTP API, event schema, key management, retention,
 integration, ops & troubleshooting: [ingest-api/README.md](ingest-api/README.md).**
 
+### Let an LLM do the integration
+
+There is a single self-contained prompt page with everything an LLM needs to
+implement a clicklog client — schema, rules, instrumentation guidance, smoke
+tests. Tell your coding agent:
+
+> Fetch `http://<dashboard-host>:46006/llms.txt` and implement telemetry in
+> this app as it describes. Here are the two env values: …
+
+The dashboard serves it at **`/llms.txt`**; if the agent can't reach the
+overlay, paste the contents of
+[`frontend/public/llms.txt`](frontend/public/llms.txt) into the chat instead.
+Either way, hand the agent the two env vars (`TELEMETRY_INGEST_URL`,
+`TELEMETRY_API_KEY`) and it can take the integration from zero to verified.
+
 ### Client side — just POST
 
 That's the whole integration: send events to `POST /v1/events` and move on.
