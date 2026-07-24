@@ -10,6 +10,9 @@
 # Rust build artifacts (ingest-api)
 **/target/
 
+# Node deps (mcp server; frontend has its own .gitignore)
+**/node_modules/
+
 # Editor / OS noise
 *.bak
 .DS_Store

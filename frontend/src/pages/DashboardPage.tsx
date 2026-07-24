@@ -90,18 +90,33 @@ export function DashboardPage() {
   )
 }
 
-// Copy-paste onboarding: hand this URL to any coding agent and it has the full
-// client integration guide (served from frontend/public/llms.txt).
+// Copy-paste onboarding: hand these URLs to any coding agent. One guide covers
+// emitting events (frontend/public/llms.txt), the other querying them back
+// (frontend/public/llms-read.txt).
 function LlmGuideBanner() {
-  const url = `${window.location.origin}/llms.txt`
   return (
-    <Card className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-2 border-accent-100 bg-accent-50 p-4">
+    <Card className="mb-4 divide-y divide-accent-100 border-accent-100 bg-accent-50">
+      <GuideRow
+        file="llms.txt"
+        title="Implementing telemetry with an LLM?"
+        description="Paste this link to any coding agent — a self-contained guide to the event standard, client rules, and smoke tests. Add your ingest URL + API key and it can do the rest."
+      />
+      <GuideRow
+        file="llms-read.txt"
+        title="Reading telemetry with an LLM?"
+        description="The mirror guide: search, single-event lookup, stats and pagination over the read API — so any agent can answer “what's breaking?” from your logs."
+      />
+    </Card>
+  )
+}
+
+function GuideRow({ file, title, description }: { file: string; title: string; description: string }) {
+  const url = `${window.location.origin}/${file}`
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 p-4">
       <div className="min-w-0 flex-1">
-        <h2 className="text-sm font-semibold text-zinc-800">Implementing telemetry with an LLM?</h2>
-        <p className="mt-0.5 text-xs text-zinc-500">
-          Paste this link to any coding agent — a self-contained guide to the event standard, client
-          rules, and smoke tests. Add your ingest URL + API key and it can do the rest.
-        </p>
+        <h2 className="text-sm font-semibold text-zinc-800">{title}</h2>
+        <p className="mt-0.5 text-xs text-zinc-500">{description}</p>
       </div>
       <div className="flex items-center gap-2">
         <a
@@ -114,7 +129,7 @@ function LlmGuideBanner() {
         </a>
         <CopyButton text={url} label="Copy link" />
       </div>
-    </Card>
+    </div>
   )
 }
 

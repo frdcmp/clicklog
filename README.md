@@ -19,6 +19,7 @@ app ──POST /v1/events (Bearer <key>)──▶ ingest-api ──▶ valkey qu
 | `ingest-api` | **The only entry point** — validates events against the standard, queues them, drains them to ClickHouse | `8080` | `46005` | [README](ingest-api/README.md) |
 | `valkey` | **Internal queue** — buffers accepted events between ingest-api and ClickHouse. Used exclusively by ingest-api | `6379` | **none (internal-only)** | [README](valkey/README.md) |
 | `clickhouse` | **The log store** — one database per project | `8123` (HTTP) | **none (internal-only)** | [README](clickhouse/README.md) |
+| `mcp` | **Optional MCP endpoint** (profile `mcp`) — read-only telemetry tools for AI clients; each client sends its own API key | `3000` | `46007` | [README](mcp/README.md) |
 
 > **Everything is gateway-only.** Neither ClickHouse nor Valkey publishes a host
 > port — both are reachable only on the internal `clicklog` network, in practice
@@ -43,6 +44,7 @@ the single root `.env` — not baked into the repo. Record your actual layout he
 |---------|----------------|----------|--------------|
 | ingest-api | _overlay IP_ | `http://<ip>:46005` | `INGEST_BIND`, `INGEST_EXT_PORT` |
 | frontend (dashboard, optional) | _overlay IP_ | `http://<ip>:46006` | `FRONTEND_BIND`, `FRONTEND_EXT_PORT` |
+| mcp (AI read tools, optional) | _overlay IP_ | `http://<ip>:46007/mcp` (or `:46006/mcp` via dashboard) | `MCP_BIND`, `MCP_EXT_PORT` |
 | clickhouse | — | internal-only (`clickhouse:8123`) | — |
 | valkey | — | internal-only (`valkey:6379`) | — |
 
@@ -181,6 +183,22 @@ curl -H "x-api-key: ik_…" "$URL/v1/stats?from=-24h&group_by=event_type&interva
 curl -H "x-api-key: ik_…" "$URL/v1/stats?from=-30d&group_by=model&metric=sum:tokens_input"
 ```
 
+### Let an LLM read the telemetry
+
+Two ways to point an AI agent at your logs, mirroring the integration guide:
+
+- **Prompt page** — the dashboard serves **`/llms-read.txt`**
+  ([`frontend/public/llms-read.txt`](frontend/public/llms-read.txt)): a
+  self-contained guide to the read API (search, stats, pagination, recipes).
+  Any agent that can make HTTP calls (Claude Code, a script) just needs that
+  link plus the base URL + API key.
+- **MCP server** — [`mcp/`](mcp/README.md) exposes `stats`, `search_events`,
+  and `get_event` as typed MCP tools over the same API. Run it as a **remote
+  endpoint** next to the stack (`docker compose --profile mcp up -d`, reachable
+  at `http://<host>:46006/mcp` via the dashboard or on its own port `46007` —
+  clients authenticate per request with their tenant API key), or spawn it
+  locally over stdio from any MCP client. clicklog itself never moves.
+
 ---
 
 ## Quick start
@@ -209,7 +227,8 @@ clicklog/
 ├── clickhouse/          ← log store: config.d/, init/, README, data dirs
 ├── valkey/              ← internal log queue: valkey.conf, README, data dir
 ├── ingest-api/          ← telemetry gateway (Rust): src/, Dockerfile, README
-└── frontend/            ← admin dashboard (React+nginx, profile: dashboard), README
+├── frontend/            ← admin dashboard (React+nginx, profile: dashboard), README
+└── mcp/                 ← stdio MCP server exposing the read API as tools (Node), README
 ```
 
 > **Admin dashboard (optional):** a React UI for API-key CRUD, cross-tenant log

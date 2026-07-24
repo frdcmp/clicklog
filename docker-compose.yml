@@ -165,6 +165,34 @@ services:
     ports:
       - "${FRONTEND_BIND:-127.0.0.1}:${FRONTEND_EXT_PORT:-46006}:80"
 
+  # ── MCP endpoint (remote AI-tool access) — OPTIONAL, profile: mcp ────────────
+  # A streamable-HTTP MCP server wrapping the READ-ONLY telemetry API, so MCP
+  # clients (Claude Code / Claude Desktop / other hosts) can query logs over the
+  # network with typed tools. It stores NO credentials: every client sends its
+  # own clicklog API key per request (x-api-key / Bearer), which scopes queries
+  # to that key's tenant — exactly like the raw read API.
+  #   Start with it:   docker compose --profile mcp up -d
+  # Reachable two ways: its own published port (below), or same-origin through
+  # the dashboard's nginx at http://<host>:46006/mcp when the dashboard runs.
+  mcp:
+    container_name: clicklog-mcp
+    build: ./mcp
+    restart: unless-stopped
+    profiles: ["mcp"]
+    depends_on:
+      ingest-api:
+        condition: service_healthy
+    environment:
+      # Talks to the gateway on the internal network; never to CH/Valkey.
+      - CLICKLOG_BASE=http://ingest-api:8080
+    networks:
+      - clicklog
+    # Same bind discipline as the other published ports: default loopback, set
+    # MCP_BIND to the private-overlay IP for other hosts. NEVER a public NIC
+    # without TLS in front — the API key travels as a header.
+    ports:
+      - "${MCP_BIND:-127.0.0.1}:${MCP_EXT_PORT:-46007}:3000"
+
 networks:
   clicklog:
     driver: bridge

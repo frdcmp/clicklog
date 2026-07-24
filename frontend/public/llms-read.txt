@@ -1,0 +1,136 @@
+# clicklog — LLM read guide (query your telemetry)
+
+You are helping a developer read and analyse telemetry stored in **clicklog**,
+a centralised log-ingestion gateway. Read this whole document, then answer
+their questions by querying the HTTP read API below. Everything you need is
+here — you do not need access to the clicklog repo or infrastructure.
+
+## What clicklog is (30 seconds)
+
+Apps POST JSON events to the gateway; events land in ClickHouse, one isolated
+database per project. The same API key used to ingest also reads back — but
+**only that project's events**. You query with structured URL parameters, never
+SQL. There are three endpoints: search events, fetch one event, aggregate
+stats.
+
+```
+you ──GET /v1/events | /v1/stats (x-api-key)──▶ clicklog gateway ──▶ ClickHouse
+```
+
+## What to ask the developer for
+
+Two values (they may already exist in the project's env as
+`TELEMETRY_INGEST_URL` / `TELEMETRY_API_KEY`):
+
+```dotenv
+CLICKLOG_BASE="http://<infra-host>:46005"   # ingest URL without /v1/events
+CLICKLOG_API_KEY="ik_…"
+```
+
+Auth on every request: `x-api-key: $CLICKLOG_API_KEY`
+(or `Authorization: Bearer $CLICKLOG_API_KEY`).
+
+## How to work (read this before querying)
+
+1. **Aggregate first, then drill down.** Start with `/v1/stats` to find the
+   hot routes / error codes / time windows, then fetch the few raw events that
+   matter. Don't page through thousands of raw events to compute a count the
+   server can compute for you.
+2. **Always time-box.** Default range is the last hour. Pass `from=-24h`,
+   `from=-7d`, etc. explicitly — an unbounded question ("have we ever…")
+   should still be probed range by range.
+3. **Numbers may arrive as strings.** ClickHouse serialises large integers
+   (counts, sums) as JSON strings. Coerce before doing math.
+4. **Empty project ≠ error.** A tenant with no events yet returns
+   `{"events": [], "next_cursor": null}` / `{"stats": []}`, not a 4xx.
+5. Bad parameters return `400 {"error": "<what's wrong>"}` — fix and retry.
+
+## Endpoint 1 — search events: `GET /v1/events`
+
+Returns newest-first by default: `{"events": [...], "next_cursor": "…"|null}`.
+
+Time range:
+
+| param | meaning |
+|-------|---------|
+| `from` | start — relative `-30s` / `-15m` / `-6h` / `-7d`, or RFC3339, or `YYYY-MM-DD HH:MM:SS`. Default `-1h` |
+| `to` | end — same formats, or `now` (default) |
+
+Exact-match filters (value may be a comma-separated list = OR):
+`category`, `event_type`, `severity`, `source`, `model`, `user_id`,
+`session_id`, `request_id`, `entity_type`, `entity_id`, `error_code`,
+`route`, `server`, `app_version`, `ip`, `http_status` (numeric).
+
+Other params:
+
+| param | meaning |
+|-------|---------|
+| `q` | case-insensitive substring match on `message` |
+| `limit` | rows per page, default 100, max 1000 |
+| `order` | `desc` (default) or `asc` — use `asc` to replay a story chronologically |
+| `cursor` | opaque pagination token — pass back the previous response's `next_cursor` verbatim; `null` means no more pages |
+
+Each event is a flat JSON object with these fields (empty string / 0 = unset):
+`event_id` (UUID), `ts` (event time, `YYYY-MM-DD HH:MM:SS.mmm` UTC),
+`received_at`, `category`, `event_type`, `severity`
+(`debug|info|warn|error`), `route`, `source`, `server`, `app_version`,
+`user_id`, `user_email`, `session_id`, `request_id`, `entity_type`,
+`entity_id`, `message`, `error_code`, `model`, `tokens_input`,
+`tokens_output`, `duration_ms`, `http_status`, `ip`, `user_agent`,
+`attributes` (stringified JSON — parse it for custom fields).
+
+## Endpoint 2 — one event: `GET /v1/events/{event_id}`
+
+`event_id` must be a UUID. Returns the event object, or `404`.
+
+## Endpoint 3 — aggregates: `GET /v1/stats`
+
+Returns `{"stats": [{"group_value": …, "value": …, "bucket": …?}]}` — one row
+per group (× time bucket if `interval` is set), ordered by value descending
+(by bucket first when bucketed). Capped at 5000 rows.
+
+| param | meaning |
+|-------|---------|
+| `group_by` | **required** — one of `category`, `event_type`, `severity`, `source`, `model`, `entity_type`, `http_status`, `route`, `server`, `app_version` |
+| `metric` | `count` (default) or `<agg>:<field>` where agg = `sum|avg|min|max` and field = `tokens_input`, `tokens_output`, `duration_ms`, `http_status` |
+| `interval` | optional time bucket: `1m`, `5m`, `15m`, `30m`, `1h`, `6h`, `12h`, `1d` — adds a `bucket` timestamp to each row |
+| _filters_ | all the `/v1/events` time + filter params apply (`from`, `to`, `category`, `severity`, `route`, `q`, …) |
+
+## Recipes
+
+```bash
+H='x-api-key: '$CLICKLOG_API_KEY
+
+# What's breaking? Errors in the last 24h, grouped by error_code…
+curl -s -H "$H" "$CLICKLOG_BASE/v1/stats?group_by=error_code&severity=error&from=-24h"
+# …then read the actual error events for the top code
+curl -s -H "$H" "$CLICKLOG_BASE/v1/events?severity=error&error_code=EPAY&from=-24h&limit=20"
+
+# Traffic per route (24h) and error timeline (7d, daily)
+curl -s -H "$H" "$CLICKLOG_BASE/v1/stats?group_by=route&from=-24h"
+curl -s -H "$H" "$CLICKLOG_BASE/v1/stats?group_by=severity&interval=1d&from=-7d"
+
+# Latency: average duration per route
+curl -s -H "$H" "$CLICKLOG_BASE/v1/stats?group_by=route&metric=avg:duration_ms&category=http&from=-24h"
+
+# LLM cost: output tokens by model, daily over a week
+curl -s -H "$H" "$CLICKLOG_BASE/v1/stats?group_by=model&metric=sum:tokens_output&interval=1d&from=-7d&category=llm"
+
+# Trace one request / one user session, in order
+curl -s -H "$H" "$CLICKLOG_BASE/v1/events?request_id=req-abc&order=asc&from=-7d"
+curl -s -H "$H" "$CLICKLOG_BASE/v1/events?session_id=sess-123&order=asc&from=-7d"
+
+# Full-text hunt in messages
+curl -s -H "$H" "$CLICKLOG_BASE/v1/events?q=timeout&from=-7d&limit=50"
+
+# Paginate: repeat with cursor until next_cursor is null
+curl -s -H "$H" "$CLICKLOG_BASE/v1/events?from=-24h&limit=500&cursor=<next_cursor>"
+```
+
+## Presenting results
+
+- Lead with the answer (counts, top offenders, the trend), not raw JSON dumps.
+- Quote individual events only when the `message` / ids matter.
+- When a result is empty, say which filters + time range you used — the data
+  may simply be outside the window.
+- `ts` is UTC — convert when the developer asks about local time.
