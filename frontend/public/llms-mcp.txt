@@ -1,0 +1,92 @@
+# clicklog — MCP connection guide
+
+You are helping a developer connect an AI client (Claude Code, Claude
+Desktop, or any MCP host) to **clicklog**'s MCP endpoint, so the client can
+query telemetry with typed tools instead of raw HTTP. Everything you need is
+here.
+
+## What this is (30 seconds)
+
+clicklog runs a remote MCP server (streamable HTTP transport) in front of its
+read-only telemetry API. It exposes three tools — `stats`, `search_events`,
+`get_event` — and stores no credentials: **every request carries the
+developer's own API key** in a header, and that key scopes all queries to one
+project (tenant).
+
+```
+MCP client ──POST /mcp (x-api-key: ik_…)──▶ clicklog gateway ──▶ ClickHouse
+```
+
+## What to ask the developer for
+
+1. **The endpoint URL.** It is served by the same host as this file:
+   `http://<dashboard-host>:46006/mcp` — or the MCP server's own port,
+   `http://<host>:46007/mcp`. Either works; same service.
+2. **A project API key** (`ik_…`) — minted per project on the dashboard's
+   **API Keys** page. One key = one project's logs. The same key an app uses
+   to ingest also reads; a dedicated key with a clear label (e.g. `mcp-laptop`)
+   is nicer to audit and revoke.
+
+## Connect
+
+**Claude Code:**
+
+```bash
+claude mcp add --transport http -s user clicklog http://<host>:46006/mcp \
+  --header "x-api-key: ik_…"
+```
+
+(`-s user` makes it available in every project; drop it to scope to the
+current one. One entry per project key — name them `clicklog-<project>` if
+connecting several.)
+
+**Claude Desktop** — it speaks stdio to local processes, so bridge with
+`mcp-remote` in `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "clicklog": {
+      "command": "npx",
+      "args": ["-y", "mcp-remote", "http://<host>:46006/mcp",
+               "--header", "x-api-key: ik_…"]
+    }
+  }
+}
+```
+
+**Any other MCP host:** streamable HTTP transport, URL as above, and send
+`x-api-key: ik_…` (or `Authorization: Bearer ik_…`) on every request.
+
+## Verify
+
+```bash
+curl -s -X POST "http://<host>:46006/mcp" \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -H 'x-api-key: ik_…' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"stats","arguments":{"group_by":"severity","from":"-24h"}}}'
+```
+
+A working setup answers with `{"stats": [...]}` for the key's project.
+Without the key header the endpoint returns `401`; a wrong key surfaces as a
+tool error quoting the gateway's `401`.
+
+## The tools
+
+| Tool | Purpose |
+|------|---------|
+| `stats` | Aggregates: counts or `sum/avg/min/max` of `tokens_input`/`tokens_output`/`duration_ms`/`http_status`, grouped by category / route / severity / model / …, optional time buckets. **Start here.** |
+| `search_events` | Filtered event search, newest first, keyset pagination via `next_cursor` |
+| `get_event` | One event by UUID |
+
+Usage guidance for the underlying API (filters, time syntax, recipes) lives in
+the companion guide at `/llms-read.txt` on this same host — the tools accept
+the same parameters.
+
+## Notes
+
+- The endpoint speaks plain HTTP on a private network — don't expose it to
+  the public internet without a TLS proxy in front.
+- Keys are revocable at any time from the dashboard's API Keys page; revoking
+  a key cuts off the MCP client using it, nothing else.

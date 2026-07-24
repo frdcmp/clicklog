@@ -106,6 +106,11 @@ function LlmGuideBanner() {
         title="Reading telemetry with an LLM?"
         description="The mirror guide: search, single-event lookup, stats and pagination over the read API — so any agent can answer “what's breaking?” from your logs."
       />
+      <GuideRow
+        file="llms-mcp.txt"
+        title="Connecting an MCP client?"
+        description="How to hook Claude Code, Claude Desktop, or any MCP host to this stack's /mcp endpoint — one command plus a project API key."
+      />
     </Card>
   )
 }
