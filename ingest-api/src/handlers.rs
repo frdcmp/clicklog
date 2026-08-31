@@ -12,7 +12,10 @@ use crate::schema::validate_event;
 /// Max events accepted in a single request (producers should batch ≤ this).
 const MAX_BATCH: usize = 1000;
 /// Approximate stream cap so a ClickHouse outage drops oldest, not grows forever.
-const STREAM_MAXLEN: usize = 5_000_000;
+/// Must stay well under Valkey's maxmemory (768MB ≈ 1.55M entries with
+/// noeviction): the drain worker acks but never deletes, so this MAXLEN on
+/// XADD is the only thing trimming the stream.
+const STREAM_MAXLEN: usize = 100_000;
 /// Cap how many per-event validation errors we echo back in one response.
 const MAX_REPORTED_ERRORS: usize = 20;
 
