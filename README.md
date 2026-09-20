@@ -14,7 +14,7 @@ nothing but a URL and an API key:
 app ──POST /v1/events (Bearer <key>)──▶ ingest-api ──▶ valkey queue ──▶ ClickHouse <tenant>.events
 ```
 
-| Service | Role | Container port | Default host port | Docs |
+| Service | Role | Container port | Compose host port | Docs |
 |---------|------|----------------|-------------------|------|
 | `ingest-api` | **The only entry point** — validates events against the standard, queues them, drains them to ClickHouse | `8080` | `46005` | [README](ingest-api/README.md) |
 | `valkey` | **Internal queue** — buffers accepted events between ingest-api and ClickHouse. Used exclusively by ingest-api | `6379` | **none (internal-only)** | [README](valkey/README.md) |
@@ -27,18 +27,98 @@ app ──POST /v1/events (Bearer <key>)──▶ ingest-api ──▶ valkey qu
 > directly; all event data must go through `POST /v1/events`, which enforces the
 > event standard and rejects anything off-spec. There is no fallback.
 
-The services run from **one combined Docker Compose stack** at the repo root
-(`docker-compose.yml` + `.env`), sharing a single `clicklog` bridge network.
-They come up and down together on **one host**. Each service keeps its own
-config/data subfolder and README.
+There are two ways to run the stack, and they share the same services,
+config keys and tenant model:
+
+- **`k8s/` — the production deployment**, a k3s namespace. The gateway is
+  addressed by a name on the private overlay that belongs to the *service*, so
+  it does not matter which node runs the pod.
+- **`docker-compose.yml` + `.env` — local and development**, all services on one
+  host sharing a `clicklog` bridge network, up and down together.
+
+Each service keeps its own config/data subfolder and README.
 
 ---
 
-## Deployment topology (fill in per environment)
+## Deployment topology
 
-The whole stack runs on **one host** (all services share the `clicklog` network).
-What interface each published port binds to and which port it uses are set in
-the single root `.env` — not baked into the repo. Record your actual layout here.
+### Production — k3s (`k8s/`)
+
+Two services are reachable, each as its own device on the private overlay
+(Tailscale), published by the operator's `loadBalancerClass: tailscale`. The
+address belongs to the Service, not to a node, so it follows the pod when it
+reschedules and every caller uses one name:
+
+| Service | Endpoint | Exposure |
+|---------|----------|----------|
+| ingest-api | `http://clicklog-ingest.<tailnet>.ts.net:8080` | overlay device |
+| frontend (dashboard) | `http://clicklog.<tailnet>.ts.net` | overlay device |
+| mcp (AI read tools) | `http://clicklog.<tailnet>.ts.net/mcp` | via the dashboard's nginx |
+| clickhouse | internal-only (`clickhouse:8123`) | NetworkPolicy: gateway only |
+| valkey | internal-only (`valkey:6379`) | NetworkPolicy: gateway only |
+
+Cluster pods resolve those names because CoreDNS forwards the overlay's DNS zone
+to the overlay resolver (`k8s/05-coredns-ts-net.yaml`); machines on the overlay
+resolve them natively. Apps therefore carry a name, and a service that is
+assigned a new overlay address needs no config change anywhere.
+
+**The manifests in `k8s/` are templates.** They are committed with
+`__REGISTRY__`, `__TAG__` and `__TAILNET__` placeholders, so this repo carries no
+one installation's addresses and nothing real is ever pushed. Rendering them is
+one command:
+
+```bash
+cp .env.k8s.example .env.k8s     # then edit: REGISTRY_HOST, TAILNET, secrets
+./k8s/render-config.sh           # -> k8s/.rendered/  (gitignored)
+kubectl apply -f k8s/.rendered/
+```
+
+`render-config.sh` writes `k8s/.rendered/` and nothing else: `00-config.yaml`
+(the Namespace, ConfigMap and Secret built from `.env.k8s`) plus every template
+with its placeholders substituted. That directory is `0700`, the Secret `0600`,
+and it is gitignored — it is the only place real values land on disk.
+
+`TAG` selects the image tag and defaults to the current git short SHA. **Applying
+the rendered manifests sets the image**, so when you mean to change only other
+fields, render with the tag that is already running:
+
+```bash
+TAG=$(kubectl -n clicklog get deploy ingest-api \
+        -o jsonpath='{.spec.template.spec.containers[0].image}' | sed 's/.*://') \
+  ./k8s/render-config.sh
+```
+
+Building and pushing the three images is the other half:
+
+```bash
+TAG=$(git rev-parse --short HEAD); REG=<your-registry-host>
+for c in ingest-api frontend mcp; do
+  docker build -t "$REG/clicklog-$c:$TAG" "./$c" && docker push "$REG/clicklog-$c:$TAG"
+  kubectl -n clicklog set image "deploy/$c" "$c=$REG/clicklog-$c:$TAG"
+done
+```
+
+Two notes on applying:
+
+- `00-config.yaml` always reports one change. Its Secret is written as
+  `stringData`, which the server stores as `data`, so the applied annotation
+  never matches — it is not a real diff.
+- A ConfigMap change needs `ingest-api` and `valkey` restarted. The gateway
+  reads it through `envFrom` and valkey pulls `VK_MAXMEMORY` into its launch
+  arguments, and neither re-reads a ConfigMap while running. Valkey persists the
+  event stream with AOF, so the queue survives the restart.
+
+`k8s/05-coredns-ts-net.yaml` is **cluster-wide DNS**, not a clicklog resource. If
+you change it, CoreDNS needs a restart:
+
+```bash
+kubectl -n kube-system rollout restart deploy/coredns
+```
+
+### Local / development — Compose
+
+All services on one host. What interface each published port binds to and which
+port it uses are set in the root `.env`, not baked into the repo:
 
 | Service | Bind interface | Endpoint | `.env` knobs |
 |---------|----------------|----------|--------------|
@@ -48,13 +128,15 @@ the single root `.env` — not baked into the repo. Record your actual layout he
 | clickhouse | — | internal-only (`clickhouse:8123`) | — |
 | valkey | — | internal-only (`valkey:6379`) | — |
 
-**Networking & security model:**
+**Networking & security model** (both deployments):
 
-- Only `ingest-api` (and the optional dashboard) publish a port, bound to
-  whatever interface you set (`*_BIND`). Put them on a **private overlay** (the
-  stacks here use one) and **never** bind to a public NIC.
-- ClickHouse and Valkey publish **nothing** — they live entirely on the internal
-  `clicklog` network, credentialed and reachable only by `ingest-api`.
+- Only `ingest-api` (and the optional dashboard) are reachable. Keep them on a
+  **private overlay** and **never** on a public NIC. Under Compose that is the
+  `*_BIND` setting; under k3s it is the overlay device the operator creates.
+- ClickHouse and Valkey are reachable only by `ingest-api` — on the internal
+  `clicklog` bridge under Compose, and by NetworkPolicy under k3s. Neither has a
+  password: unreachability *is* the access control, so the two must stay
+  equivalent.
 - Auth is always on: apps authenticate to the gateway with an API key; the
   dashboard with a JWT login.
 
@@ -91,7 +173,8 @@ app ──POST /v1/events (Bearer <key>)──▶ ingest-api ──▶ Valkey in
 The app config is just:
 
 ```dotenv
-TELEMETRY_INGEST_URL="http://<infra-host>:46005/v1/events"   # or ingest-api:8080 on-host
+TELEMETRY_INGEST_URL="http://clicklog-ingest.<tailnet>.ts.net:8080/v1/events"
+#                      ... or http://ingest-api:8080/v1/events from inside the stack
 TELEMETRY_API_KEY="ik_…"                                     # one key → one tenant
 ```
 
@@ -222,7 +305,11 @@ docker compose logs -f clickhouse
 ```
 clicklog/
 ├── README.md            ← you are here: the connection conventions
-├── docker-compose.yml   ← the combined stack (all four services)
+├── k8s/                 ← the production deployment (k3s namespace `clicklog`)
+│   ├── *.yaml           ← templates: __REGISTRY__ / __TAG__ / __TAILNET__
+│   ├── render-config.sh ← renders them + the Secret into k8s/.rendered/
+│   └── .rendered/       ← gitignored output; what you actually apply
+├── docker-compose.yml   ← the local/dev stack (all services on one host)
 ├── .env / .env.example  ← single env for the whole stack
 ├── clickhouse/          ← log store: config.d/, init/, README, data dirs
 ├── valkey/              ← internal log queue: valkey.conf, README, data dir

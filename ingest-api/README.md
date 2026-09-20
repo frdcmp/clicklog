@@ -16,10 +16,13 @@ your app ──POST /v1/events (Bearer <key>)──▶ ingest-api ──XADD─�
         └──────────────────────── all inside clicklog (one host)     ────────────┘
 ```
 
-- **Endpoint (prod):** `http://<infra-host>:46005` over the private overlay.
-  On the same host, use the internal name `http://ingest-api:8080`.
-- The hop is plain HTTP, but the overlay encrypts it, and the port binds
-  to the overlay IP only (never a public NIC). The API key is the second layer.
+- **Endpoint (prod):** `http://clicklog-ingest.<tailnet>.ts.net:8080`
+  over the private overlay. The name belongs to the Kubernetes Service, so it
+  resolves to the gateway wherever the pod runs. From inside the stack, use the
+  internal name `http://ingest-api:8080`.
+- **Endpoint (Compose):** `http://<host>:46005`, bound to the overlay IP.
+- The hop is plain HTTP, but the overlay encrypts it and the gateway is never on
+  a public NIC. The API key is the second layer.
 
 ---
 
@@ -28,7 +31,7 @@ your app ──POST /v1/events (Bearer <key>)──▶ ingest-api ──XADD─�
 1. **Mint a key** for your tenant (see §4). You get an `ik_…` string, shown once.
 2. **Set two env vars** in the app:
    ```dotenv
-   TELEMETRY_INGEST_URL="http://<infra-host>:46005/v1/events"
+   TELEMETRY_INGEST_URL="http://clicklog-ingest.<tailnet>.ts.net:8080/v1/events"
    TELEMETRY_API_KEY="ik_…"
    ```
    On the same host as the infra you may use `http://ingest-api:8080/v1/events`.
@@ -40,7 +43,7 @@ If `TELEMETRY_INGEST_URL` is unset, an app should simply not send anything
 
 Quick smoke test:
 ```bash
-curl -s -X POST http://<infra-host>:46005/v1/events \
+curl -s -X POST http://clicklog-ingest.<tailnet>.ts.net:8080/v1/events \
   -H "Authorization: Bearer $TELEMETRY_API_KEY" \
   -H 'content-type: application/json' \
   -d '[{"category":"test","event_type":"smoke","severity":"info","message":"hello"}]'
@@ -135,7 +138,7 @@ The tenant id is the project name, used verbatim.
    name + a label, and store the key now — it is shown once and not recoverable.
    Or scripted, with a JWT (admin credentials from `.env`):
    ```bash
-   cd ~/docker/frdcmp-infra && source .env
+   cd ~/docker/clicklog && source .env
    TOKEN=$(curl -s -X POST http://<infra-host>:46005/v1/admin/login \
      -H 'content-type: application/json' \
      -d "{\"email\":\"$ADMIN_EMAIL\",\"password\":\"$ADMIN_PASSWORD\"}" | jq -r .token)
@@ -181,7 +184,7 @@ Apps use the read API (`GET /v1/events`, `GET /v1/stats` — same key that
 writes); admins use the dashboard's Logs page. For ad-hoc SQL, ClickHouse
 publishes no port, so query it from the infra host through the container:
 ```bash
-cd ~/docker/frdcmp-infra
+cd ~/docker/clicklog
 docker compose exec clickhouse clickhouse-client \
   --database "<tenant>" --query "SELECT category, event_type, count() n, max(ts) latest
                  FROM events WHERE ts > now() - INTERVAL 1 HOUR
@@ -208,7 +211,7 @@ durability, and retries are the gateway's job, not the client's. Batching
 Runs as the `ingest-api` service in the root `docker-compose.yml`.
 
 ```bash
-cd ~/docker/frdcmp-infra
+cd ~/docker/clicklog
 docker compose up -d --build ingest-api     # build + (re)start
 docker compose logs -f ingest-api           # tail
 docker compose ps ingest-api                # status/health

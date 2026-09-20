@@ -1,0 +1,160 @@
+# Admin dashboard — the React SPA served by nginx, which also reverse-proxies
+# /v1, /health and /mcp to the pods next door so the browser stays same-origin
+# (no CORS, no build-time API URL).
+#
+# Exposed on the tailnet as its own device, the same way the ingest gateway is:
+#     http://clicklog.__TAILNET__
+# A LoadBalancer rather than a tailscale Ingress. The Ingress path terminates
+# TLS with an ACME certificate, and ACME fails from this pod network: DNS
+# returns an AAAA for the Let's Encrypt API and the proxy dials it, but the pod
+# network is IPv4-only, so the dial is unreachable and no certificate is issued.
+# The tailnet already carries this traffic inside WireGuard, and the dashboard's
+# only auth is a JWT, so it stays on the tailnet either way.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dashboard-nginx
+  namespace: clicklog
+data:
+  dashboard.conf: |
+    server {
+        listen 80;
+        server_name _;
+
+        root /usr/share/nginx/html;
+        index index.html;
+
+        # Declare UTF-8 on text responses — without it browsers decode llms.txt
+        # (em-dashes, arrows) as Latin-1 and show mojibake.
+        charset utf-8;
+
+        # Body cap matching the ingest-api payload limit (batched events).
+        client_max_body_size 8m;
+
+        gzip on;
+        gzip_comp_level 5;
+        gzip_min_length 1024;
+        gzip_types text/css application/javascript application/json image/svg+xml;
+
+        # Hashed build assets are immutable — cache hard.
+        location /assets/ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+            try_files $uri =404;
+        }
+
+        # API → ingest-api. Covers both /v1/admin/* (dashboard) and
+        # /v1/events|stats (app-facing).
+        location /v1/ {
+            proxy_pass http://ingest-api:8080;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_read_timeout 60s;
+        }
+
+        location = /health {
+            proxy_pass http://ingest-api:8080/health;
+        }
+
+        # Remote MCP endpoint. The variable + resolver defer DNS to request
+        # time, so nginx still starts when mcp is down (requests then 502
+        # instead of killing the dashboard). Buffering is off: MCP responses
+        # can be SSE streams.
+        #
+        # nginx's resolver does not apply the pod's search domains, so the
+        # upstream must be a fully qualified Service name. 10.43.0.10 is
+        # kube-dns.
+        location = /mcp {
+            resolver 10.43.0.10 valid=10s ipv6=off;
+            set $mcp_upstream http://mcp.clicklog.svc.cluster.local:3000;
+            proxy_pass $mcp_upstream;
+            proxy_http_version 1.1;
+            proxy_set_header Host $host;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_buffering off;
+            proxy_read_timeout 300s;
+        }
+
+        # SPA fallback: unknown paths return index.html for React Router.
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+    }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: clicklog
+spec:
+  selector:
+    app: frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: clicklog
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: __REGISTRY__/clicklog-frontend:__TAG__
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              memory: 16Mi
+              cpu: 10m
+            limits:
+              memory: 128Mi
+              cpu: 500m
+          volumeMounts:
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d/dashboard.conf
+              subPath: dashboard.conf
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /index.html
+              port: 80
+            initialDelaySeconds: 3
+            periodSeconds: 10
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: dashboard-nginx
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clicklog-dashboard
+  namespace: clicklog
+  annotations:
+    # The tailnet device name, and so the MagicDNS name admins type.
+    tailscale.com/hostname: clicklog
+spec:
+  type: LoadBalancer
+  loadBalancerClass: tailscale
+  selector:
+    app: frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80

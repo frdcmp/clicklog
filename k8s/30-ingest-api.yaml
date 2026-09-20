@@ -1,0 +1,108 @@
+# ingest-api — the telemetry gateway and the ONLY door to ClickHouse.
+#
+# Apps POST batches of events with an API key (one key -> one tenant); the
+# gateway buffers them on the Valkey `ingest:events` stream and drains them into
+# each tenant's ClickHouse `events` table. ClickHouse/Valkey credentials never
+# leave this pod -- apps only ever hold a key. Keys live in the
+# `ingest.ingest_keys` ClickHouse table; mint/list/revoke from the dashboard.
+#
+# Two Services front it:
+#   clicklog-ingest  LoadBalancer, loadBalancerClass: tailscale. The Tailscale
+#                    operator gives this Service its own tailnet device, so the
+#                    100.x address belongs to the SERVICE, not to a node. Every
+#                    caller -- pods on any node, and any machine on the tailnet
+#                    -- uses that one address, and it follows the pod when it
+#                    reschedules. This is the address every app is configured
+#                    with (TELEMETRY_INGEST_URL).
+#   ingest-api       ClusterIP, for the dashboard and mcp pods next door.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ingest-api
+  namespace: clicklog
+spec:
+  selector:
+    app: ingest-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clicklog-ingest
+  namespace: clicklog
+  annotations:
+    # Without this the operator names the device <namespace>-<service>, giving
+    # the doubled clicklog-clicklog-ingest. This is the tailnet name apps use.
+    tailscale.com/hostname: clicklog-ingest
+spec:
+  type: LoadBalancer
+  loadBalancerClass: tailscale
+  selector:
+    app: ingest-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ingest-api
+  namespace: clicklog
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ingest-api
+  template:
+    metadata:
+      labels:
+        app: ingest-api
+    spec:
+      containers:
+        - name: ingest-api
+          image: __REGISTRY__/clicklog-ingest-api:__TAG__
+          ports:
+            - containerPort: 8080
+          env:
+            # Co-located stores, reached by Service name in this namespace.
+            # Both are unauthenticated and admitted only to this pod by the
+            # NetworkPolicy.
+            - name: CLICKHOUSE_URL
+              value: http://clickhouse:8123
+            - name: REDIS_URL
+              value: redis://valkey:6379
+            # The gateway reads RUST_LOG; the env file names it INGEST_RUST_LOG
+            # so it does not collide with the apps' own log levels.
+            - name: RUST_LOG
+              valueFrom:
+                configMapKeyRef:
+                  name: clicklog-config
+                  key: INGEST_RUST_LOG
+          envFrom:
+            - configMapRef:
+                name: clicklog-config
+            - secretRef:
+                name: clicklog-secret
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 50m
+            limits:
+              memory: 512Mi
+              cpu: "1"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 20

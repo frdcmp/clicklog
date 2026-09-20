@@ -1,6 +1,20 @@
-# Secrets — every service reads its own .env (never committed)
+# Secrets — every service reads its own .env (never committed). This repo is
+# PUBLIC: only .env.example ships. Encrypted copies of the real files live in
+# .backup/, which is ignored too — nothing encrypted goes to a public remote.
 .env
+.env.k8s
 **/.env
+.backup/
+
+# Everything deploy.sh renders with real values: the Secret, and the manifests
+# with __REGISTRY__/__TAG__/__TAILNET__ substituted in.
+k8s/.rendered/
+# Guard: an older render wrote the Secret here.
+k8s/00-config.yaml
+
+# Ships this deployment: carries the registry host, the overlay service names
+# and the tenant list, none of which are portable to another install.
+deploy.sh
 
 # Local data / logs (bind-mounted under each service dir)
 **/clickhouse_data/
@@ -10,7 +24,7 @@
 # Rust build artifacts (ingest-api)
 **/target/
 
-# Node deps (mcp server; frontend has its own .gitignore)
+# Node deps (frontend, mcp)
 **/node_modules/
 
 # Editor / OS noise

@@ -1,0 +1,68 @@
+# MCP endpoint — a streamable-HTTP MCP server wrapping the READ-ONLY telemetry
+# API, so MCP clients (Claude Code / Claude Desktop / other hosts) can query
+# logs with typed tools. It stores NO credentials: every client sends its own
+# clicklog API key per request (x-api-key / Bearer), which scopes queries to
+# that key's tenant — exactly like the raw read API.
+#
+# Reached through the dashboard's nginx at
+# http://clicklog.__TAILNET__/mcp, so it rides the dashboard's overlay device
+# and publishes none of its own.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp
+  namespace: clicklog
+spec:
+  selector:
+    app: mcp
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp
+  namespace: clicklog
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp
+  template:
+    metadata:
+      labels:
+        app: mcp
+    spec:
+      # Kubernetes otherwise injects a Docker-link-style variable per Service in
+      # the namespace, and the Service named `mcp` yields MCP_PORT=tcp://IP:3000
+      # -- which shadows this app's own MCP_PORT listen port and makes it parse
+      # as NaN. Nothing here reads those variables; Service DNS is the contract.
+      enableServiceLinks: false
+      containers:
+        - name: mcp
+          image: __REGISTRY__/clicklog-mcp:__TAG__
+          ports:
+            - containerPort: 3000
+          env:
+            # Talks to the gateway in this namespace; never to ClickHouse/Valkey.
+            - name: CLICKLOG_BASE
+              value: http://ingest-api:8080
+            # Also set explicitly: an env entry wins over an injected Service
+            # link, so the listen port holds even if service links come back.
+            - name: MCP_PORT
+              value: "3000"
+          resources:
+            requests:
+              memory: 32Mi
+              cpu: 10m
+            limits:
+              memory: 256Mi
+              cpu: 500m
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10

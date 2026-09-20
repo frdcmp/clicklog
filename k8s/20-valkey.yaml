@@ -1,0 +1,129 @@
+# Valkey — the internal event queue. ingest-api XADDs accepted batches onto the
+# `ingest:events` stream and a background task drains them into ClickHouse.
+# Used exclusively by ingest-api; the NetworkPolicy admits nothing else.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: valkey-config
+  namespace: clicklog
+data:
+  valkey.conf: |
+    # Config for the internal log queue Valkey.
+    #
+    # Used exclusively by ingest-api as its event buffer (`ingest:events`
+    # stream). There is no auth: reachability is governed by the NetworkPolicy,
+    # which admits only ingest-api.
+
+    # Listen on the pod interface. protected-mode must be off so ingest-api can
+    # connect without a password.
+    bind 0.0.0.0
+    port 6379
+    protected-mode no
+    tcp-keepalive 60
+
+    # -- Durability --
+    # This is the durable buffer for accepted events (streams), so persist to
+    # disk. AOF for per-second durability + periodic RDB snapshots.
+    appendonly yes
+    appendfsync everysec
+    dir /data
+    save 900 1
+    save 300 10
+    save 60 10000
+
+    # -- Memory --
+    # maxmemory is supplied via --maxmemory (VK_MAXMEMORY) at launch.
+    # noeviction: never silently drop queued events -- a full instance ERRORS
+    # on write rather than evicting stream data. The ingest stream is capped
+    # (XADD MAXLEN) by the gateway, so it cannot grow without bound.
+    maxmemory-policy noeviction
+
+    loglevel notice
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: valkey-data
+  namespace: clicklog
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: longhorn-latency
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: valkey
+  namespace: clicklog
+spec:
+  selector:
+    app: valkey
+  ports:
+    - name: valkey
+      port: 6379
+      targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valkey
+  namespace: clicklog
+spec:
+  replicas: 1
+  # RWO volume: the old pod must release it before the new one starts.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: valkey
+  template:
+    metadata:
+      labels:
+        app: valkey
+    spec:
+      containers:
+        - name: valkey
+          image: valkey/valkey:8-alpine
+          command:
+            - valkey-server
+            - /etc/valkey/valkey.conf
+            - --maxmemory
+            - $(VK_MAXMEMORY)
+          env:
+            - name: VK_MAXMEMORY
+              valueFrom:
+                configMapKeyRef:
+                  name: clicklog-config
+                  key: VK_MAXMEMORY
+          ports:
+            - containerPort: 6379
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 100m
+            # Above VK_MAXMEMORY so valkey hits its own noeviction error before
+            # the kernel OOM-kills the pod and drops the AOF mid-write.
+            limits:
+              memory: 1Gi
+              cpu: "1"
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /etc/valkey/valkey.conf
+              subPath: valkey.conf
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "valkey-cli ping | grep -q PONG"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: valkey-data
+        - name: config
+          configMap:
+            name: valkey-config

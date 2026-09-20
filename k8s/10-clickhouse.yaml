@@ -1,0 +1,163 @@
+# ClickHouse — the log store. One server, one database per tenant, created on
+# demand by ingest-api. No auth and no exposed Service beyond the cluster: the
+# NetworkPolicy in 60-networkpolicy.yaml is the access control, admitting only
+# ingest-api. Apps never connect here; everything enters through the gateway.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clickhouse-config
+  namespace: clicklog
+data:
+  low-resources.xml: |
+    <?xml version="1.0"?>
+    <!--
+      ClickHouse is cgroup-aware and sizes itself off the container memory
+      limit, NOT host RAM. At a small limit it enters low-memory mode where it
+      IGNORES an absolute max_server_memory_usage and always derives the server
+      cap from the ratio below, so the ratio is the real knob:
+          server cap = 0.8 * (container memory limit)
+      At the 2Gi limit that is ~1.6 GiB, leaving headroom under the hard limit.
+
+      Only memory knobs are touched on purpose. Capping thread pools saves
+      almost no idle RAM (threads are lazy) but can starve the startup thread
+      that opens the client listener and hang the server.
+    -->
+    <clickhouse>
+        <max_server_memory_usage_to_ram_ratio>0.8</max_server_memory_usage_to_ram_ratio>
+
+        <!-- Caches: defaults are 5 GiB / 8 GiB. A small logs dataset needs almost none. -->
+        <mark_cache_size>134217728</mark_cache_size>
+        <uncompressed_cache_size>0</uncompressed_cache_size>
+
+        <!-- A handful of writers + the occasional admin read query. -->
+        <max_concurrent_queries>32</max_concurrent_queries>
+    </clickhouse>
+  network-and-logging.xml: |
+    <?xml version="1.0"?>
+    <!--
+      listen_host 0.0.0.0 makes the server accept connections on the pod
+      interface. There is no auth: reachability is governed by the
+      NetworkPolicy, which admits only ingest-api.
+
+      The internal server logs (system.*_log tables and text logs) are capped so
+      ClickHouse's own bookkeeping never out-grows the log data we care about.
+    -->
+    <clickhouse>
+        <listen_host>0.0.0.0</listen_host>
+
+        <logger>
+            <level>information</level>
+            <size>200M</size>
+            <count>5</count>
+        </logger>
+
+        <query_log>
+            <database>system</database>
+            <table>query_log</table>
+            <ttl>event_date + INTERVAL 14 DAY DELETE</ttl>
+            <flush_interval_milliseconds>7500</flush_interval_milliseconds>
+        </query_log>
+        <trace_log remove="remove"/>
+        <metric_log remove="remove"/>
+        <asynchronous_metric_log remove="remove"/>
+        <session_log remove="remove"/>
+    </clickhouse>
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: clickhouse-data
+  namespace: clicklog
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: longhorn-latency
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: clicklog
+spec:
+  selector:
+    app: clickhouse
+  ports:
+    - name: http
+      port: 8123
+      targetPort: 8123
+    - name: native
+      port: 9000
+      targetPort: 9000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clickhouse
+  namespace: clicklog
+spec:
+  replicas: 1
+  # RWO volume: the old pod must release it before the new one starts.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: clickhouse
+  template:
+    metadata:
+      labels:
+        app: clickhouse
+    spec:
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:24
+          ports:
+            - containerPort: 8123
+            - containerPort: 9000
+          resources:
+            requests:
+              memory: 512Mi
+              cpu: 250m
+            limits:
+              memory: 2Gi
+              cpu: "2"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/clickhouse
+            # Server text logs are rotated and bounded by the config above, and
+            # carry nothing worth replicating — keep them off Longhorn.
+            - name: logs
+              mountPath: /var/log/clickhouse-server
+            - name: config
+              mountPath: /etc/clickhouse-server/config.d/low-resources.xml
+              subPath: low-resources.xml
+              readOnly: true
+            - name: config
+              mountPath: /etc/clickhouse-server/config.d/network-and-logging.xml
+              subPath: network-and-logging.xml
+              readOnly: true
+          # exec, not httpGet: the NetworkPolicy admits only ingest-api on
+          # 8123/9000, and a kubelet HTTP probe arrives from off-pod and would
+          # be dropped.
+          readinessProbe:
+            exec:
+              command: ["clickhouse-client", "--query", "SELECT 1"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["clickhouse-client", "--query", "SELECT 1"]
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: clickhouse-data
+        - name: logs
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: clickhouse-config

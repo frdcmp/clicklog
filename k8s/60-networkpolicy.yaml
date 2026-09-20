@@ -1,0 +1,49 @@
+# Network isolation IS the access control for the stores: ClickHouse and Valkey
+# run without passwords, exactly as they do under Compose, where a private
+# bridge network made them unreachable from anywhere but the gateway.
+#
+# A Kubernetes namespace grants no such isolation — every pod in the cluster can
+# dial every ClusterIP — so these policies re-establish it. Each selects one
+# store and admits only the ingest-api pod, which leaves every other workload in
+# the namespace (dashboard, mcp) unrestricted.
+#
+# Both stores use exec probes so the kubelet never needs network ingress here.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: clickhouse-gateway-only
+  namespace: clicklog
+spec:
+  podSelector:
+    matchLabels:
+      app: clickhouse
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ingest-api
+      ports:
+        - protocol: TCP
+          port: 8123
+        - protocol: TCP
+          port: 9000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: valkey-gateway-only
+  namespace: clicklog
+spec:
+  podSelector:
+    matchLabels:
+      app: valkey
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ingest-api
+      ports:
+        - protocol: TCP
+          port: 6379
