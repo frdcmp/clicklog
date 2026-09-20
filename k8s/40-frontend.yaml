@@ -149,6 +149,9 @@ metadata:
   annotations:
     # The tailnet device name, and so the MagicDNS name admins type.
     tailscale.com/hostname: clicklog
+    # LoadBalancer proxies CrashLoop on decatron (netfilter rules fail);
+    # without this they work only while the scheduler picks decametro.
+    tailscale.com/proxy-class: on-decametro
 spec:
   type: LoadBalancer
   loadBalancerClass: tailscale

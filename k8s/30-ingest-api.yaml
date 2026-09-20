@@ -37,6 +37,9 @@ metadata:
     # Without this the operator names the device <namespace>-<service>, giving
     # the doubled clicklog-clicklog-ingest. This is the tailnet name apps use.
     tailscale.com/hostname: clicklog-ingest
+    # LoadBalancer proxies CrashLoop on decatron (netfilter rules fail);
+    # without this they work only while the scheduler picks decametro.
+    tailscale.com/proxy-class: on-decametro
 spec:
   type: LoadBalancer
   loadBalancerClass: tailscale
