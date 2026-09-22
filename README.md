@@ -58,8 +58,8 @@ reschedules and every caller uses one name:
 | valkey | internal-only (`valkey:6379`) | NetworkPolicy: gateway only |
 
 Cluster pods resolve those names because CoreDNS forwards the overlay's DNS zone
-to the overlay resolver (`k8s/05-coredns-ts-net.yaml`); machines on the overlay
-resolve them natively. Apps therefore carry a name, and a service that is
+to the overlay resolver — a cluster-wide CoreDNS setting maintained with the
+cluster, not in this repo; machines on the overlay resolve them natively. Apps therefore carry a name, and a service that is
 assigned a new overlay address needs no config change anywhere.
 
 **The manifests in `k8s/` are templates.** They are committed with
@@ -108,12 +108,9 @@ Two notes on applying:
   arguments, and neither re-reads a ConfigMap while running. Valkey persists the
   event stream with AOF, so the queue survives the restart.
 
-`k8s/05-coredns-ts-net.yaml` is **cluster-wide DNS**, not a clicklog resource. If
-you change it, CoreDNS needs a restart:
-
-```bash
-kubectl -n kube-system rollout restart deploy/coredns
-```
+The `ts.net` CoreDNS zone clicklog's consumers rely on is **cluster-wide DNS**,
+not a clicklog resource, so it is not in `k8s/`: applying this stack never
+touches cluster DNS.
 
 ### Local / development — Compose
 
