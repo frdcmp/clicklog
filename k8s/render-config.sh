@@ -70,6 +70,9 @@ if os.path.exists('.env'):
         print( "           add them to .env.k8s, or to COMPOSE_ONLY if dev-only.", file=sys.stderr)
 
 OUT='k8s/.rendered'
+# Start from an empty folder: a template removed from k8s/ must not live on here,
+# because `kubectl apply -f k8s/.rendered/` would keep applying the stale copy.
+for stale in glob.glob(f'{OUT}/*.yaml'): os.remove(stale)
 os.makedirs(OUT, exist_ok=True)
 os.chmod(OUT, 0o700)
 
