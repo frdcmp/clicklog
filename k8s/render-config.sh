@@ -53,7 +53,8 @@ SECRET={'JWT_SECRET','ADMIN_PASSWORD'}
 # Recorded in .env.k8s so they survive, but consumed by the APPS, not by this
 # stack: each app holds its own ingest key. Putting them in the cluster would
 # hand every clicklog pod a credential it has no use for.
-REFERENCE={'KEEPERPROXY_INGEST_KEY','BODHISTREAMS_INGEST_KEY','PIUMAVAULT_INGEST_KEY'}
+# Any <APP>_INGEST_KEY, so a key recorded for a new app never lands in the ConfigMap.
+REFERENCE={k for k in cfg_all if k.endswith('_INGEST_KEY')}
 
 # Substituted into the manifests below, not read by any pod.
 DEPLOY_ONLY={'REGISTRY_HOST','TAILNET','TS_INGEST_HOST','TS_DASHBOARD_HOST','TS_PROXY_CLASS'}
