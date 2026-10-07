@@ -73,6 +73,16 @@ cp .env.k8s.example .env.k8s     # then edit: REGISTRY_HOST, TAILNET, secrets
 kubectl apply -f k8s/.rendered/
 ```
 
+The two Services' tailnet names and the ProxyClass that pins their proxies come
+from `.env.k8s` too (`TS_INGEST_HOST`, `TS_DASHBOARD_HOST`, `TS_PROXY_CLASS`): two
+clusters on one tailnet cannot share a name. A second cluster keeps its own env
+file and output folder, both gitignored:
+
+```bash
+ENV_K8S=.env.k8s.<name> RENDER_DIR=k8s/.rendered-<name> ./k8s/render-config.sh
+kubectl --context <its-context> apply -f k8s/.rendered-<name>/
+```
+
 `render-config.sh` writes `k8s/.rendered/` and nothing else: `00-config.yaml`
 (the Namespace, ConfigMap and Secret built from `.env.k8s`) plus every template
 with its placeholders substituted. That directory is `0700`, the Secret `0600`,
