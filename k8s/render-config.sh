@@ -13,6 +13,10 @@
 #
 # Then:  kubectl apply -f k8s/.rendered/
 #
+# A second installation (another cluster) keeps its own env file and output
+# folder, both gitignored:
+#   ENV_K8S=.env.k8s.<name> RENDER_DIR=k8s/.rendered-<name> k8s/render-config.sh
+#
 # TAG selects the image tag to render. It defaults to the current git short SHA;
 # pass TAG=<tag> to pin an existing one. Applying the rendered manifests sets
 # the image, so pass the tag that is already running if you only mean to update
@@ -25,6 +29,7 @@
 # only the .example files. Encrypted copies live in .backup/ (gitignored).
 set -euo pipefail
 
+ENV_K8S="${ENV_K8S:-.env.k8s}" RENDER_DIR="${RENDER_DIR:-k8s/.rendered}" \
 TAG="${TAG:-$(git rev-parse --short HEAD 2>/dev/null || echo latest)}" \
 python3 - <<'PY'
 import os, sys, glob, re
@@ -37,9 +42,10 @@ def load(path):
         k,v=line.split('=',1); env[k.strip()]=v.strip().strip('"').strip("'")
     return env
 
-if not os.path.exists('.env.k8s'):
-    sys.exit("error: .env.k8s not found (copy .env.k8s.example, or see .backup/)")
-cfg_all = load('.env.k8s')
+ENV_K8S=os.environ['ENV_K8S']
+if not os.path.exists(ENV_K8S):
+    sys.exit(f"error: {ENV_K8S} not found (copy .env.k8s.example, or see .backup/)")
+cfg_all = load(ENV_K8S)
 
 # Key names only; values live in .env.k8s. These render into a k8s Secret.
 SECRET={'JWT_SECRET','ADMIN_PASSWORD'}
@@ -50,7 +56,7 @@ SECRET={'JWT_SECRET','ADMIN_PASSWORD'}
 REFERENCE={'KEEPERPROXY_INGEST_KEY','BODHISTREAMS_INGEST_KEY','PIUMAVAULT_INGEST_KEY'}
 
 # Substituted into the manifests below, not read by any pod.
-DEPLOY_ONLY={'REGISTRY_HOST','TAILNET'}
+DEPLOY_ONLY={'REGISTRY_HOST','TAILNET','TS_INGEST_HOST','TS_DASHBOARD_HOST','TS_PROXY_CLASS'}
 
 cfg={k:v for k,v in cfg_all.items() if k not in SECRET|REFERENCE|DEPLOY_ONLY}
 sec={k:v for k,v in cfg_all.items() if k in SECRET}
@@ -69,7 +75,7 @@ if os.path.exists('.env'):
         print(f"  WARNING: in .env but not .env.k8s -> {missing}", file=sys.stderr)
         print( "           add them to .env.k8s, or to COMPOSE_ONLY if dev-only.", file=sys.stderr)
 
-OUT='k8s/.rendered'
+OUT=os.environ['RENDER_DIR']
 # Start from an empty folder: a template removed from k8s/ must not live on here,
 # because `kubectl apply -f k8s/.rendered/` would keep applying the stale copy.
 for stale in glob.glob(f'{OUT}/*.yaml'): os.remove(stale)
@@ -84,12 +90,15 @@ open(f'{OUT}/00-config.yaml','w').write(
 os.chmod(f'{OUT}/00-config.yaml',0o600)
 
 # --- the manifest templates -------------------------------------------------
-subs = {'__REGISTRY__': cfg_all.get('REGISTRY_HOST',''),
-        '__TAILNET__':  cfg_all.get('TAILNET',''),
-        '__TAG__':      os.environ.get('TAG','')}
+# placeholder -> the .env.k8s key that fills it (TAG comes from the environment)
+SRC = {'__REGISTRY__': 'REGISTRY_HOST', '__TAILNET__': 'TAILNET',
+       '__TS_INGEST_HOST__': 'TS_INGEST_HOST', '__TS_DASHBOARD_HOST__': 'TS_DASHBOARD_HOST',
+       '__TS_PROXY_CLASS__': 'TS_PROXY_CLASS'}
+subs = {p: cfg_all.get(k, '') for p, k in SRC.items()}
+subs['__TAG__'] = os.environ.get('TAG', '')
 for k,v in subs.items():
     if not v: sys.exit(f"error: nothing to substitute for {k} "
-                       f"(set {'TAG in the environment' if k=='__TAG__' else k.strip('_')+'_HOST' if k=='__REGISTRY__' else 'TAILNET'} )")
+                       f"(set {'TAG in the environment' if k=='__TAG__' else SRC[k]+' in '+ENV_K8S})")
 
 n=0
 for src in sorted(glob.glob('k8s/*.yaml')):
@@ -107,6 +116,6 @@ for src in sorted(glob.glob('k8s/*.yaml')):
     open(os.path.join(OUT, os.path.basename(src)),'w').write(text)
     n+=1
 
-print(f"rendered {OUT}/ — {len(cfg)} config keys, {len(sec)} secrets, "
+print(f"rendered {OUT}/ from {ENV_K8S} — {len(cfg)} config keys, {len(sec)} secrets, "
       f"{n} manifests (registry {subs['__REGISTRY__']}, tag {subs['__TAG__']}, 0700/0600, gitignored)")
 PY

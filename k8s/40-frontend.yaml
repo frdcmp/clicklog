@@ -3,7 +3,7 @@
 # (no CORS, no build-time API URL).
 #
 # Exposed on the tailnet as its own device, the same way the ingest gateway is:
-#     http://clicklog.__TAILNET__
+#     http://__TS_DASHBOARD_HOST__.__TAILNET__
 # A LoadBalancer rather than a tailscale Ingress. The Ingress path terminates
 # TLS with an ACME certificate, and ACME fails from this pod network: DNS
 # returns an AAAA for the Let's Encrypt API and the proxy dials it, but the pod
@@ -152,11 +152,12 @@ metadata:
   name: clicklog-dashboard
   namespace: clicklog
   annotations:
-    # The tailnet device name, and so the MagicDNS name admins type.
-    tailscale.com/hostname: clicklog
-    # LoadBalancer proxies CrashLoop on decatron (netfilter rules fail);
-    # without this they work only while the scheduler picks decametro.
-    tailscale.com/proxy-class: on-decametro
+    # The tailnet device name, and so the MagicDNS name admins type
+    # (TS_DASHBOARD_HOST in .env.k8s).
+    tailscale.com/hostname: __TS_DASHBOARD_HOST__
+    # Pins the LoadBalancer proxy to a node whose kernel accepts its netfilter
+    # rules (TS_PROXY_CLASS); on some nodes the proxy CrashLoops without it.
+    tailscale.com/proxy-class: __TS_PROXY_CLASS__
 spec:
   type: LoadBalancer
   loadBalancerClass: tailscale

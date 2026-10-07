@@ -3,12 +3,15 @@
 # .backup/, which is ignored too — nothing encrypted goes to a public remote.
 .env
 .env.k8s
+.env.k8s.*
+!.env.k8s.example
 **/.env
 .backup/
 
 # Everything deploy.sh renders with real values: the Secret, and the manifests
 # with __REGISTRY__/__TAG__/__TAILNET__ substituted in.
 k8s/.rendered/
+k8s/.rendered-*/
 # Guard: an older render wrote the Secret here.
 k8s/00-config.yaml
 

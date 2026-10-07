@@ -35,11 +35,12 @@ metadata:
   namespace: clicklog
   annotations:
     # Without this the operator names the device <namespace>-<service>, giving
-    # the doubled clicklog-clicklog-ingest. This is the tailnet name apps use.
-    tailscale.com/hostname: clicklog-ingest
-    # LoadBalancer proxies CrashLoop on decatron (netfilter rules fail);
-    # without this they work only while the scheduler picks decametro.
-    tailscale.com/proxy-class: on-decametro
+    # the doubled clicklog-clicklog-ingest. This is the tailnet name apps use,
+    # TS_INGEST_HOST in .env.k8s: two clusters on one tailnet cannot share it.
+    tailscale.com/hostname: __TS_INGEST_HOST__
+    # Pins the LoadBalancer proxy to a node whose kernel accepts its netfilter
+    # rules (TS_PROXY_CLASS); on some nodes the proxy CrashLoops without it.
+    tailscale.com/proxy-class: __TS_PROXY_CLASS__
 spec:
   type: LoadBalancer
   loadBalancerClass: tailscale

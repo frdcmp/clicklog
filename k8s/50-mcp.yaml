@@ -5,7 +5,7 @@
 # that key's tenant — exactly like the raw read API.
 #
 # Reached through the dashboard's nginx at
-# http://clicklog.__TAILNET__/mcp, so it rides the dashboard's overlay device
+# http://__TS_DASHBOARD_HOST__.__TAILNET__/mcp, so it rides the dashboard's overlay device
 # and publishes none of its own.
 apiVersion: v1
 kind: Service
