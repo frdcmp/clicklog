@@ -8,10 +8,10 @@ here.
 ## What this is (30 seconds)
 
 clicklog runs a remote MCP server (streamable HTTP transport) in front of its
-read-only telemetry API. It exposes three tools — `stats`, `search_events`,
-`get_event` — and stores no credentials: **every request carries the
-developer's own API key** in a header, and that key scopes all queries to one
-project (tenant).
+read-only telemetry API. It exposes four tools — `list_tenants`, `stats`,
+`search_events`, `get_event` — and stores no credentials: **every request
+carries the developer's own API key** in a header, and that key decides the
+reach: a project key reads one project (tenant), a reader key reads them all.
 
 ```
 MCP client ──POST /mcp (x-api-key: ik_…)──▶ clicklog gateway ──▶ ClickHouse
@@ -22,10 +22,11 @@ MCP client ──POST /mcp (x-api-key: ik_…)──▶ clicklog gateway ──�
 1. **The endpoint URL.** It is served by the same host as this file:
    `http://<dashboard-host>:46006/mcp` — or the MCP server's own port,
    `http://<host>:46007/mcp`. Either works; same service.
-2. **A project API key** (`ik_…`) — minted per project on the dashboard's
-   **API Keys** page. One key = one project's logs. The same key an app uses
-   to ingest also reads; a dedicated key with a clear label (e.g. `mcp-laptop`)
-   is nicer to audit and revoke.
+2. **An API key** (`ik_…`) from the dashboard's **API Keys** page. Prefer a
+   **reader key** (*Mint key → Reader (all tenants)*): read-only, it covers
+   every project, so one MCP entry is enough. A project key works too but
+   reads only that project. Either way a dedicated key with a clear label
+   (e.g. `mcp-laptop`) is nicer to audit and revoke.
 
 ## Connect
 
@@ -37,8 +38,8 @@ claude mcp add --transport http -s user clicklog http://<host>:46006/mcp \
 ```
 
 (`-s user` makes it available in every project; drop it to scope to the
-current one. One entry per project key — name them `clicklog-<project>` if
-connecting several.)
+current one. With a reader key this one entry covers every project; with
+project keys, add one entry per key, named `clicklog-<project>`.)
 
 **Claude Desktop** — it speaks stdio to local processes, so bridge with
 `mcp-remote` in `claude_desktop_config.json`:
@@ -76,9 +77,13 @@ tool error quoting the gateway's `401`.
 
 | Tool | Purpose |
 |------|---------|
+| `list_tenants` | The projects this key reads — the names the other tools take as `tenant` |
 | `stats` | Aggregates: counts or `sum/avg/min/max` of `tokens_input`/`tokens_output`/`duration_ms`/`http_status`, grouped by category / route / severity / model / …, optional time buckets. **Start here.** |
 | `search_events` | Filtered event search, newest first, keyset pagination via `next_cursor` |
-| `get_event` | One event by UUID |
+| `get_event` | One event by UUID (with a reader key, pass its `tenant`) |
+
+With a reader key, every tool takes an optional `tenant`; leave it out to span
+all projects (rows carry `_tenant`, and `stats` can `group_by: "tenant"`).
 
 Usage guidance for the underlying API (filters, time syntax, recipes) lives in
 the companion guide at `/llms-read.txt` on this same host — the tools accept

@@ -9,9 +9,10 @@ here — you do not need access to the clicklog repo or infrastructure.
 
 Apps POST JSON events to the gateway; events land in ClickHouse, one isolated
 database per project. The same API key used to ingest also reads back — but
-**only that project's events**. You query with structured URL parameters, never
-SQL. There are three endpoints: search events, fetch one event, aggregate
-stats.
+**only that project's events**. A *reader key* is the exception: read-only, it
+reads every project (see "Reader keys" below). You query with structured URL
+parameters, never SQL. The endpoints: search events, fetch one event,
+aggregate stats, and list the projects your key reads.
 
 ```
 you ──GET /v1/events | /v1/stats (x-api-key)──▶ clicklog gateway ──▶ ClickHouse
@@ -44,6 +45,16 @@ Auth on every request: `x-api-key: $CLICKLOG_API_KEY`
 4. **Empty project ≠ error.** A tenant with no events yet returns
    `{"events": [], "next_cursor": null}` / `{"stats": []}`, not a 4xx.
 5. Bad parameters return `400 {"error": "<what's wrong>"}` — fix and retry.
+
+## Reader keys (every project, read-only)
+
+If `GET /v1/tenants` answers `{"all": true, "tenants": [...]}`, the key is a
+reader key. Then every endpoint below takes `tenant=<name>` to pick one
+project; leave it out and results span all of them, each row tagged
+`_tenant`, and `/v1/stats` accepts `group_by=tenant` to compare projects.
+`/v1/events/{id}` needs `tenant` (an id is looked up in one project). A
+project key answers `{"all": false, "tenants": ["<its own>"]}` and may pass
+only its own name.
 
 ## Endpoint 1 — search events: `GET /v1/events`
 

@@ -3,13 +3,14 @@ import { PageHeader } from '../components/layout/PageHeader'
 import { Card } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
 import { Field, Input } from '../components/ui/Field'
+import { Badge } from '../components/ui/Badge'
 import { Modal } from '../components/ui/Modal'
 import { CopyButton } from '../components/ui/CopyButton'
 import { EmptyState, ErrorNote, Spinner } from '../components/ui/Feedback'
 import { useToast } from '../components/ui/Toast'
 import { useKeys, useMintKey, useRevokeKey } from '../query/keys'
 import { useTenants } from '../query/tenants'
-import type { MintResult } from '../api/keys'
+import { ALL_TENANTS, type MintResult } from '../api/keys'
 import type { ApiKey } from '../types'
 import { fmtDateTime } from '../lib/time'
 import { cn } from '../lib/cn'
@@ -38,7 +39,7 @@ export function KeysPage() {
     <div>
       <PageHeader
         title="API Keys"
-        description="One key maps to one tenant (its own ClickHouse database). Keys are shown once at mint time."
+        description="A project key reads and writes one tenant (its own ClickHouse database); a reader key reads every tenant and never writes. Keys are shown once at mint time."
         actions={<Button onClick={() => setMintOpen(true)}>+ Mint key</Button>}
       />
 
@@ -101,6 +102,15 @@ function TabButton({ label, count, on, onClick }: { label: string; count: number
   )
 }
 
+function TenantCell({ tenant }: { tenant: string }) {
+  if (tenant !== ALL_TENANTS) return <>{tenant}</>
+  return (
+    <span className="inline-flex items-center gap-2">
+      All tenants <Badge tone="accent">read-only</Badge>
+    </span>
+  )
+}
+
 function KeyList({ keys, onRevoke }: { keys: ApiKey[]; onRevoke: (k: ApiKey) => void }) {
   return (
     <Card className="overflow-hidden">
@@ -117,7 +127,9 @@ function KeyList({ keys, onRevoke }: { keys: ApiKey[]; onRevoke: (k: ApiKey) => 
         <tbody>
           {keys.map((k) => (
             <tr key={k.id} className="border-b border-zinc-100 last:border-0">
-              <td className="px-4 py-2.5 font-medium text-zinc-800">{k.tenant}</td>
+              <td className="px-4 py-2.5 font-medium text-zinc-800">
+                <TenantCell tenant={k.tenant} />
+              </td>
               <td className="px-4 py-2.5 text-zinc-500">{k.label || '—'}</td>
               <td className="px-4 py-2.5 text-zinc-500">{fmtDateTime(k.created_at)}</td>
               <td className="px-4 py-2.5 text-right">
@@ -139,7 +151,9 @@ function KeyList({ keys, onRevoke }: { keys: ApiKey[]; onRevoke: (k: ApiKey) => 
         {keys.map((k) => (
           <li key={k.id} className="flex items-center justify-between gap-3 p-4">
             <div className="min-w-0">
-              <div className="font-medium text-zinc-800">{k.tenant}</div>
+              <div className="font-medium text-zinc-800">
+                <TenantCell tenant={k.tenant} />
+              </div>
               <div className="truncate text-xs text-zinc-500">{k.label || '—'}</div>
               <div className="text-xs text-zinc-400">
                 {k.active === 1 ? fmtDateTime(k.created_at) : `revoked ${fmtDateTime(k.revoked_at)}`}
@@ -170,13 +184,14 @@ function MintModal({
 }) {
   const mint = useMintKey()
   const toast = useToast()
+  const [kind, setKind] = useState<'project' | 'reader'>('project')
   const [tenant, setTenant] = useState('')
   const [label, setLabel] = useState('')
 
   const submit = (e: FormEvent) => {
     e.preventDefault()
-    const t = tenant.trim().toLowerCase()
-    if (!/^[a-z_][a-z0-9_]*$/.test(t)) {
+    const t = kind === 'reader' ? ALL_TENANTS : tenant.trim().toLowerCase()
+    if (kind === 'project' && !/^[a-z_][a-z0-9_]*$/.test(t)) {
       toast.error('Tenant must be a slug: letters, digits, underscore (no leading digit).')
       return
     }
@@ -184,6 +199,7 @@ function MintModal({
       { tenant: t, label: label.trim() },
       {
         onSuccess: (m) => {
+          setKind('project')
           setTenant('')
           setLabel('')
           onMinted(m)
@@ -210,23 +226,54 @@ function MintModal({
       }
     >
       <form id="mint-form" onSubmit={submit} className="space-y-4">
-        <Field label="Tenant" htmlFor="tenant" hint="Lowercase slug. Also the tenant's ClickHouse database name.">
-          <Input
-            id="tenant"
-            list="known-tenants"
-            value={tenant}
-            onChange={(e) => setTenant(e.target.value)}
-            placeholder="myapp"
-            autoFocus
-          />
-          <datalist id="known-tenants">
-            {knownTenants.map((t) => (
-              <option key={t} value={t} />
+        <Field
+          label="Key type"
+          hint={
+            kind === 'project'
+              ? 'Sends and reads events for one tenant. What an app uses.'
+              : 'Reads every tenant, never writes. One MCP connection for the whole installation.'
+          }
+        >
+          <div className="grid grid-cols-2 gap-1 rounded-md bg-zinc-100 p-1">
+            {(['project', 'reader'] as const).map((k) => (
+              <button
+                key={k}
+                type="button"
+                onClick={() => setKind(k)}
+                className={cn(
+                  'rounded px-3 py-1.5 text-sm font-medium transition-colors',
+                  kind === k ? 'bg-white text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-800',
+                )}
+              >
+                {k === 'project' ? 'Project' : 'Reader (all tenants)'}
+              </button>
             ))}
-          </datalist>
+          </div>
         </Field>
+        {kind === 'project' && (
+          <Field label="Tenant" htmlFor="tenant" hint="Lowercase slug. Also the tenant's ClickHouse database name.">
+            <Input
+              id="tenant"
+              list="known-tenants"
+              value={tenant}
+              onChange={(e) => setTenant(e.target.value)}
+              placeholder="myapp"
+              autoFocus
+            />
+            <datalist id="known-tenants">
+              {knownTenants.map((t) => (
+                <option key={t} value={t} />
+              ))}
+            </datalist>
+          </Field>
+        )}
         <Field label="Label" htmlFor="label" hint="Free-text note, e.g. environment or owner.">
-          <Input id="label" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="prod" />
+          <Input
+            id="label"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+            placeholder={kind === 'project' ? 'prod' : 'mcp-laptop'}
+          />
         </Field>
       </form>
     </Modal>
@@ -244,17 +291,33 @@ function MintedModal({ minted, onClose }: { minted: MintResult | null; onClose: 
       {minted && (
         <div className="space-y-3">
           <p className="text-sm text-zinc-600">
-            Copy this key now for tenant <span className="font-medium text-zinc-900">{minted.tenant}</span>. It is
-            hashed server-side and <span className="font-medium">cannot be shown again</span>.
+            Copy this key now for{' '}
+            {minted.tenant === ALL_TENANTS ? (
+              <span className="font-medium text-zinc-900">every tenant (read-only)</span>
+            ) : (
+              <>
+                tenant <span className="font-medium text-zinc-900">{minted.tenant}</span>
+              </>
+            )}
+            . It is hashed server-side and <span className="font-medium">cannot be shown again</span>.
           </p>
           <div className="flex items-center gap-2 rounded-md border border-zinc-200 bg-zinc-50 p-2">
             <code className="min-w-0 flex-1 break-all font-mono text-xs text-zinc-800">{minted.key}</code>
             <CopyButton text={minted.key} />
           </div>
           <div className="rounded-md bg-zinc-50 p-3 text-xs text-zinc-500">
-            Use it as{' '}
-            <code className="font-mono">Authorization: Bearer {'{key}'}</code> or{' '}
-            <code className="font-mono">x-api-key</code> when POSTing to <code className="font-mono">/v1/events</code>.
+            {minted.tenant === ALL_TENANTS ? (
+              <>
+                Send it as <code className="font-mono">x-api-key</code> to <code className="font-mono">/mcp</code> or
+                the read API; pick a tenant with <code className="font-mono">tenant</code>, or omit it to read all.
+              </>
+            ) : (
+              <>
+                Use it as <code className="font-mono">Authorization: Bearer {'{key}'}</code> or{' '}
+                <code className="font-mono">x-api-key</code> when POSTing to{' '}
+                <code className="font-mono">/v1/events</code>.
+              </>
+            )}
           </div>
         </div>
       )}
@@ -296,7 +359,14 @@ function RevokeModal({ apiKey, onClose }: { apiKey: ApiKey | null; onClose: () =
     >
       {apiKey && (
         <p className="text-sm text-zinc-600">
-          Revoke the key for tenant <span className="font-medium text-zinc-900">{apiKey.tenant}</span>
+          Revoke the key for{' '}
+          {apiKey.tenant === ALL_TENANTS ? (
+            <span className="font-medium text-zinc-900">every tenant (read-only)</span>
+          ) : (
+            <>
+              tenant <span className="font-medium text-zinc-900">{apiKey.tenant}</span>
+            </>
+          )}
           {apiKey.label ? ` (${apiKey.label})` : ''}? Any service using it will stop being able to send or read events
           within ~60s. This cannot be undone.
         </p>

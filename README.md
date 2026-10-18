@@ -159,6 +159,7 @@ the API key's scope. Keep it consistent everywhere.
 |--|-----------|
 | Isolation unit | a **database** per project |
 | Identity | an **ingest API key** per project (only the gateway can reach ClickHouse) |
+| Reading across projects | a **reader key** (tenant `*`, `events:read` only): reads every tenant, can never ingest |
 | Configured via | a key minted into `ingest.ingest_keys` (see ingest-api) |
 | Provisioned | DB + `events` table auto-created by the gateway on first write |
 
@@ -255,6 +256,13 @@ Example valid event:
 
 The **same API key** that writes also reads — one key per project, full
 read+write, scoped to that project's own `events`. Apps just hold a URL + key.
+
+A **reader key** is the exception: minted for tenant `*` (dashboard: *Mint key
+→ Reader*), it carries `events:read` only, so it reads every tenant and is
+refused at ingest (`403`). The read endpoints take `tenant=<name>` to narrow it;
+leave it out and results span every tenant, each row tagged `_tenant`, and
+`group_by=tenant` compares them. A project key may pass its own tenant and is
+refused (`403`) for any other.
 Callers never send SQL; they pass structured params, the gateway builds
 parameter-bound, read-only ClickHouse queries from a fixed column allowlist.
 
@@ -262,7 +270,8 @@ parameter-bound, read-only ClickHouse queries from a fixed column allowlist.
 |----------|---------|
 | `GET /v1/events` | Search/list. Params: `from`,`to` (`-1h`/`-7d`/RFC3339, default last 1h → now), `category`/`event_type`/`severity`/`source`/`model`/`user_id`/… (exact, comma = OR), `http_status`, `q` (substring on `message`), `order` (`asc`/`desc`), `limit` (≤1000), `cursor`. Returns `{events, next_cursor}`. |
 | `GET /v1/events/{event_id}` | Fetch one event by UUID. |
-| `GET /v1/stats` | Aggregates. Params: `group_by` (`category`/`event_type`/`severity`/`source`/`model`/`http_status`/…), `interval` (`1m`/`5m`/`1h`/`1d` → timeseries; omit → totals), `metric` (`count`, `sum:tokens_input`, `avg:duration_ms`, …), + same filters. |
+| `GET /v1/stats` | Aggregates. Params: `group_by` (`category`/`event_type`/`severity`/`source`/`model`/`http_status`/…, `tenant` for a reader key), `interval` (`1m`/`5m`/`1h`/`1d` → timeseries; omit → totals), `metric` (`count`, `sum:tokens_input`, `avg:duration_ms`, …), + same filters. |
+| `GET /v1/tenants` | The tenants this key reads: `{tenants, all}`. A reader key gets every tenant with events. |
 
 ```bash
 # last 24h of warnings on http routes
@@ -282,11 +291,12 @@ Two ways to point an AI agent at your logs, mirroring the integration guide:
   self-contained guide to the read API (search, stats, pagination, recipes).
   Any agent that can make HTTP calls (Claude Code, a script) just needs that
   link plus the base URL + API key.
-- **MCP server** — [`mcp/`](mcp/README.md) exposes `stats`, `search_events`,
-  and `get_event` as typed MCP tools over the same API. Run it as a **remote
+- **MCP server** — [`mcp/`](mcp/README.md) exposes `list_tenants`, `stats`,
+  `search_events` and `get_event` as typed MCP tools over the same API. With a
+  reader key, one MCP connection covers every project. Run it as a **remote
   endpoint** next to the stack (`docker compose --profile mcp up -d`, reachable
   at `http://<host>:46006/mcp` via the dashboard or on its own port `46007` —
-  clients authenticate per request with their tenant API key), or spawn it
+  clients authenticate per request with their API key), or spawn it
   locally over stdio from any MCP client. clicklog itself never moves.
 
 ---

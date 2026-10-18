@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 // clicklog MCP server — read-only tools over the clicklog telemetry read API.
 //
+// The key decides the reach: a project key reads its one tenant; a reader key
+// (minted for tenant `*`, read-only) reads every tenant, so ONE MCP entry
+// covers a whole installation. Tools take an optional `tenant` to narrow it.
+//
 // Two transports:
 //   • stdio (default)      — launched locally by an MCP client (Claude Code /
 //     Claude Desktop). The API key comes from env and scopes every query to
@@ -33,6 +37,16 @@ if (!BASE) {
   console.error('clicklog-mcp: set CLICKLOG_BASE (e.g. http://host:46005)')
   process.exit(1)
 }
+
+// Which tenant(s) to read. Only a reader key can choose; a project key may
+// name its own tenant and nothing else.
+const tenantArg = z
+  .string()
+  .optional()
+  .describe(
+    "Tenant (project) to read, e.g. 'myapp' — see list_tenants. Omit to read every tenant the key " +
+      "can see; rows then carry _tenant. A project key reads only its own tenant.",
+  )
 
 // Exact-match filters accepted by /v1/events and /v1/stats. A value may be a
 // comma-separated list (matches any of them).
@@ -83,7 +97,16 @@ async function get(apiKey, path, params = {}) {
 // The tenant API key is bound per server instance: from env in stdio mode,
 // from the request headers in http mode (a fresh instance per request).
 function buildServer(apiKey) {
-  const server = new McpServer({ name: 'clicklog', version: '0.1.0' })
+  const server = new McpServer({ name: 'clicklog', version: '0.2.0' })
+
+  server.tool(
+    'list_tenants',
+    'List the tenants (projects) this key can read. Returns {tenants, all}: all=true means a ' +
+      'reader key covering every tenant that has received events. Call this first to learn ' +
+      'the names to pass as `tenant`.',
+    {},
+    async () => get(apiKey, '/v1/tenants'),
+  )
 
   server.tool(
     'search_events',
@@ -92,6 +115,7 @@ function buildServer(apiKey) {
       'Numeric JSON values may be serialised as strings — coerce before doing math. ' +
       "The attributes field is stringified JSON — parse it for custom data. Timestamps are UTC.",
     {
+      tenant: tenantArg,
       ...filterShape,
       limit: z.number().int().min(1).max(1000).optional().describe('Rows per page, default 100, max 1000'),
       order: z.enum(['desc', 'asc']).optional().describe("'desc' (default) or 'asc' to replay chronologically"),
@@ -102,9 +126,13 @@ function buildServer(apiKey) {
 
   server.tool(
     'get_event',
-    'Fetch a single telemetry event by its UUID event_id.',
-    { event_id: z.string().uuid().describe('The event UUID') },
-    async ({ event_id }) => get(apiKey, `/v1/events/${event_id}`),
+    'Fetch a single telemetry event by its UUID event_id. With a key that reads every tenant, ' +
+      "pass the event's tenant (the _tenant field of a search result).",
+    {
+      event_id: z.string().uuid().describe('The event UUID'),
+      tenant: z.string().optional().describe("The event's tenant — required for a key that reads every tenant"),
+    },
+    async ({ event_id, tenant }) => get(apiKey, `/v1/events/${event_id}`, { tenant }),
   )
 
   server.tool(
@@ -112,10 +140,13 @@ function buildServer(apiKey) {
     'Aggregate telemetry events: counts or sum/avg/min/max of a numeric field, grouped by a dimension, ' +
       'optionally bucketed over time. Returns {stats: [{group_value, value, bucket?}]} sorted by value ' +
       '(by bucket first when bucketed), capped at 5000 rows. Start here to find hot routes / error codes / ' +
-      'trends, then drill into search_events. All search filters apply.',
+      'trends, then drill into search_events. All search filters apply. ' +
+      "group_by 'tenant' compares projects; it needs a key that reads every tenant and no tenant filter.",
     {
+      tenant: tenantArg,
       group_by: z
         .enum([
+          'tenant',
           'category',
           'event_type',
           'severity',

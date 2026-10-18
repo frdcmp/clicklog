@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use crate::ch::Ch;
 use crate::drain::STREAM;
-use crate::keys::KeyStore;
+use crate::keys::{KeyStore, ALL_TENANTS, PROJECT_SCOPES, SCOPE_READ};
 use crate::schema::validate_event;
 
 /// Max events accepted in a single request (producers should batch ≤ this).
@@ -91,9 +91,14 @@ pub async fn ingest(
     let Some(key) = bearer_or_apikey(&req) else {
         return HttpResponse::Unauthorized().json(serde_json::json!({ "error": "missing api key" }));
     };
-    let Some(tenant) = state.keys.tenant_for(&key).await else {
+    let Some(grant) = state.keys.grant_for(&key).await else {
         return HttpResponse::Unauthorized().json(serde_json::json!({ "error": "invalid api key" }));
     };
+    if !grant.can_write() {
+        return HttpResponse::Forbidden()
+            .json(serde_json::json!({ "error": "this key is read-only — ingest needs a project key" }));
+    }
+    let tenant = grant.tenant;
 
     let body = match std::str::from_utf8(&body) {
         Ok(s) => s,
@@ -168,6 +173,7 @@ pub async fn ingest(
 
 #[derive(Deserialize)]
 pub struct MintReq {
+    /// A tenant slug for a project key, or `*` for a read-only reader key.
     pub tenant: String,
     #[serde(default)]
     pub label: String,
@@ -185,10 +191,22 @@ pub async fn mint_key(
     if tenant.is_empty() {
         return HttpResponse::BadRequest().json(serde_json::json!({ "error": "tenant required" }));
     }
-    match state.keys.mint(tenant, body.label.trim()).await {
+    // A reader key reads every tenant and never writes; a project key does both
+    // for its one tenant, whose slug is also its database name.
+    let scopes = if tenant == ALL_TENANTS {
+        SCOPE_READ
+    } else if crate::read::safe_ident(tenant) {
+        PROJECT_SCOPES
+    } else {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "tenant must be a slug (letters, digits, underscore) or '*' for a read-only key on every tenant"
+        }));
+    };
+    match state.keys.mint(tenant, body.label.trim(), scopes).await {
         Ok((key, id)) => HttpResponse::Ok().json(serde_json::json!({
             "id": id,
             "tenant": tenant,
+            "scopes": scopes,
             "key": key,
             "note": "store this key now — it is not recoverable",
         })),

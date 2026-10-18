@@ -92,10 +92,12 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::PayloadConfig::new(8 * 1024 * 1024))
             .route("/health", web::get().to(handlers::health))
             .route("/v1/events", web::post().to(handlers::ingest))
-            // Read API (tenant-scoped, key → tenant; read + write share one key).
+            // Read API (key-scoped: a project key reads + writes its one tenant; a
+            // read-only reader key, tenant `*`, reads every tenant).
             .route("/v1/events", web::get().to(read::list_events))
             .route("/v1/events/{event_id}", web::get().to(read::get_event))
             .route("/v1/stats", web::get().to(read::stats))
+            .route("/v1/tenants", web::get().to(read::tenants))
             .route("/v1/admin/keys", web::post().to(handlers::mint_key))
             .route("/v1/admin/keys", web::get().to(handlers::list_keys))
             .route("/v1/admin/keys/{id}", web::delete().to(handlers::revoke_key))

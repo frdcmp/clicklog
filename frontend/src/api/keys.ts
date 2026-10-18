@@ -3,9 +3,13 @@ import type { ApiKey } from '../types'
 
 export const listKeys = () => request<ApiKey[]>('/keys')
 
+/** Tenant of a reader key: read-only, every tenant. */
+export const ALL_TENANTS = '*'
+
 export interface MintResult {
   id: string
   tenant: string
+  scopes: string
   key: string
   note?: string
 }

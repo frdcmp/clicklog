@@ -48,7 +48,8 @@ export function DocsPage() {
                                        ClickHouse  <tenant>.events`}</Pre>
             <P>
               One key maps to one <b>tenant</b> (its own database). The same key both writes and reads that tenant's
-              events. Logging is <b>gateway-only</b>: ClickHouse is not otherwise reachable.
+              events. A <b>reader key</b> (tenant <Code>*</Code>) reads every tenant and never writes. Logging is{' '}
+              <b>gateway-only</b>: ClickHouse is not otherwise reachable.
             </P>
           </Section>
 
@@ -109,6 +110,11 @@ export function DocsPage() {
               <Code>metric</Code> (<Code>count</Code>, <Code>sum:tokens_input</Code>, <Code>avg:duration_ms</Code>, …)
               plus the same filters.
             </P>
+            <Endpoint method="GET" path="/v1/tenants" note="tenants this key reads" />
+            <P>
+              With a reader key every read takes <Code>tenant</Code> (omit for all; rows carry <Code>_tenant</Code>,
+              and <Code>group_by=tenant</Code> works). <Code>/v1/events/{'{event_id}'}</Code> needs it.
+            </P>
           </Section>
 
           <Section id="admin" title="Admin API">
@@ -119,7 +125,7 @@ export function DocsPage() {
             <Endpoint method="POST" path="/v1/admin/login" note="{ email, password } → { token }" />
             <Endpoint method="GET" path="/v1/admin/me" />
             <Endpoint method="GET" path="/v1/admin/keys" />
-            <Endpoint method="POST" path="/v1/admin/keys" note="{ tenant, label } → key (shown once)" />
+            <Endpoint method="POST" path="/v1/admin/keys" note="{ tenant, label } → key (shown once); tenant * = reader key" />
             <Endpoint method="DELETE" path="/v1/admin/keys/{id}" />
             <Endpoint method="GET" path="/v1/admin/tenants" />
             <Endpoint method="GET" path="/v1/admin/events" note="+ tenant (name or * for all)" />

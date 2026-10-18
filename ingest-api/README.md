@@ -83,7 +83,7 @@ the raw endpoints are:
 
 | Method | Path | Body | Returns |
 |--------|------|------|---------|
-| `POST` | `/v1/admin/keys` | `{"tenant":"...","label":"..."}` | `{id, tenant, key, note}` — `key` shown once |
+| `POST` | `/v1/admin/keys` | `{"tenant":"...","label":"..."}` | `{id, tenant, scopes, key, note}` — `key` shown once. `tenant: "*"` mints a **reader key**: `events:read` only, reads every tenant (pick one with `?tenant=` on the read API), refused at ingest |
 | `GET` | `/v1/admin/keys` | — | array of key metadata (no plaintext) |
 | `DELETE` | `/v1/admin/keys/{id}` | — | `{"revoked": true\|false}` |
 

@@ -1,8 +1,10 @@
 //! Read API — queries over each project's `events` table.
 //!
 //! Two entry paths share the same query builders:
-//!   • `/v1/events|stats` (app-facing): the API key resolves to ONE tenant, and
-//!     every query is hard-scoped to that tenant's `<tenant>.events` table.
+//!   • `/v1/events|stats` (app-facing): a project key resolves to ONE tenant, and
+//!     every query is hard-scoped to that tenant's `<tenant>.events` table. A
+//!     reader key (tenant `*`, read-only) picks with the `tenant` param instead,
+//!     exactly like the admin path below.
 //!   • `/v1/admin/events|stats` (dashboard): a JWT admin passes an explicit
 //!     `tenant` param — a single tenant, or `*`/`all` to query ACROSS every
 //!     tenant that has an `events` table (UNION ALL, each row tagged `_tenant`).
@@ -19,6 +21,7 @@ use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use serde_json::{json, Value};
 
 use crate::handlers::{bearer_or_apikey, State};
+use crate::keys::Grant;
 
 const DEFAULT_LIMIT: usize = 100;
 const MAX_LIMIT: usize = 1000;
@@ -145,20 +148,42 @@ fn fmt_ch(dt: DateTime<Utc>) -> String {
     dt.format("%Y-%m-%d %H:%M:%S%.3f").to_string()
 }
 
-/// Resolve the API key to its tenant (same path as ingest). Returns the tenant
-/// or an error response to short-circuit on.
-async fn resolve(req: &HttpRequest, state: &State) -> Result<String, HttpResponse> {
+/// Resolve the API key to a readable grant (same lookup as ingest), or an error
+/// response to short-circuit on.
+async fn resolve(req: &HttpRequest, state: &State) -> Result<Grant, HttpResponse> {
     let Some(key) = bearer_or_apikey(req) else {
         return Err(HttpResponse::Unauthorized().json(json!({ "error": "missing api key" })));
     };
-    let Some(tenant) = state.keys.tenant_for(&key).await else {
+    let Some(grant) = state.keys.grant_for(&key).await else {
         return Err(HttpResponse::Unauthorized().json(json!({ "error": "invalid api key" })));
     };
-    if !safe_ident(&tenant) {
+    if !grant.can_read() {
+        return Err(HttpResponse::Forbidden().json(json!({ "error": "this key cannot read" })));
+    }
+    if !grant.all_tenants() && !safe_ident(&grant.tenant) {
         return Err(HttpResponse::InternalServerError()
             .json(json!({ "error": "invalid tenant identifier" })));
     }
-    Ok(tenant)
+    Ok(grant)
+}
+
+/// The tenants a v1 read covers, as `(tenant DBs, cross)`. A reader key takes
+/// the `tenant` param like the admin path (omitted = every tenant). A project
+/// key reads only its own tenant: the param may name it, never another one.
+async fn v1_tenants(
+    state: &State,
+    grant: &Grant,
+    param: Option<&String>,
+) -> Result<(Vec<String>, bool), HttpResponse> {
+    if grant.all_tenants() {
+        return resolve_tenant_param(state, param).await;
+    }
+    match param.map(|s| s.trim()) {
+        None | Some("") => Ok((vec![grant.tenant.clone()], false)),
+        Some(t) if t == grant.tenant => Ok((vec![grant.tenant.clone()], false)),
+        Some(_) => Err(HttpResponse::Forbidden()
+            .json(json!({ "error": "this key reads only its own tenant" }))),
+    }
 }
 
 /// Build the shared WHERE clauses (time range + allowlisted filters). Does NOT
@@ -220,14 +245,14 @@ fn build_filters(
     Ok(wh)
 }
 
-// ── tenant resolution for the admin path ──────────────────────────────────────
+// ── tenant resolution (admin path + reader keys) ──────────────────────────────
 
-/// Resolve the admin `tenant` query param into `(tenant DBs, cross)`. A concrete
+/// Resolve a `tenant` query param into `(tenant DBs, cross)`. A concrete
 /// name → `([name], false)`. `*` / `all` / empty → every tenant that currently
 /// has an `events` table (from `system.tables`), with `cross = true` — which
 /// makes the read tag each row with `_tenant` and enables `group_by=tenant`, even
 /// when only one tenant happens to have data.
-pub(crate) async fn resolve_admin_tenants(
+pub(crate) async fn resolve_tenant_param(
     state: &State,
     param: Option<&String>,
 ) -> Result<(Vec<String>, bool), HttpResponse> {
@@ -506,33 +531,47 @@ pub(crate) async fn query_stats(
     Ok(json!({ "stats": rows }))
 }
 
-// ── v1 handlers (API-key scoped to one tenant) ────────────────────────────────
+// ── v1 handlers (API-key scoped: one tenant, or every tenant for a reader key) ─
 
 pub async fn list_events(
     req: HttpRequest,
     state: web::Data<State>,
     qs: web::Query<HashMap<String, String>>,
 ) -> impl Responder {
-    let tenant = match resolve(&req, &state).await {
+    let grant = match resolve(&req, &state).await {
+        Ok(g) => g,
+        Err(r) => return r,
+    };
+    let q = qs.into_inner();
+    let (tenants, cross) = match v1_tenants(&state, &grant, q.get("tenant")).await {
         Ok(t) => t,
         Err(r) => return r,
     };
-    match query_events(&state, &[tenant], false, &qs.into_inner()).await {
+    match query_events(&state, &tenants, cross, &q).await {
         Ok(body) => HttpResponse::Ok().json(body),
         Err(r) => r,
     }
 }
 
+/// A reader key must name the event's tenant (`?tenant=`), as on the admin path.
 pub async fn get_event(
     req: HttpRequest,
     state: web::Data<State>,
     path: web::Path<String>,
+    qs: web::Query<HashMap<String, String>>,
 ) -> impl Responder {
-    let tenant = match resolve(&req, &state).await {
+    let grant = match resolve(&req, &state).await {
+        Ok(g) => g,
+        Err(r) => return r,
+    };
+    let (tenants, cross) = match v1_tenants(&state, &grant, qs.get("tenant")).await {
         Ok(t) => t,
         Err(r) => return r,
     };
-    match query_event(&state, &tenant, &path.into_inner()).await {
+    if cross {
+        return bad("a concrete 'tenant' query param is required with a key that reads every tenant");
+    }
+    match query_event(&state, &tenants[0], &path.into_inner()).await {
         Ok(ev) => HttpResponse::Ok().json(ev),
         Err(r) => r,
     }
@@ -543,12 +582,32 @@ pub async fn stats(
     state: web::Data<State>,
     qs: web::Query<HashMap<String, String>>,
 ) -> impl Responder {
-    let tenant = match resolve(&req, &state).await {
+    let grant = match resolve(&req, &state).await {
+        Ok(g) => g,
+        Err(r) => return r,
+    };
+    let q = qs.into_inner();
+    let (tenants, cross) = match v1_tenants(&state, &grant, q.get("tenant")).await {
         Ok(t) => t,
         Err(r) => return r,
     };
-    match query_stats(&state, &[tenant], false, &qs.into_inner()).await {
+    match query_stats(&state, &tenants, cross, &q).await {
         Ok(body) => HttpResponse::Ok().json(body),
         Err(r) => r,
+    }
+}
+
+/// `GET /v1/tenants` — what this key can read. A reader key gets every tenant
+/// that has received events (`all: true`); a project key gets its own.
+pub async fn tenants(req: HttpRequest, state: web::Data<State>) -> impl Responder {
+    let grant = match resolve(&req, &state).await {
+        Ok(g) => g,
+        Err(r) => return r,
+    };
+    if grant.all_tenants() {
+        let tenants = existing_event_tenants(&state).await;
+        HttpResponse::Ok().json(json!({ "tenants": tenants, "all": true }))
+    } else {
+        HttpResponse::Ok().json(json!({ "tenants": [grant.tenant], "all": false }))
     }
 }

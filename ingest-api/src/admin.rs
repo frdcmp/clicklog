@@ -14,6 +14,7 @@ use serde_json::json;
 
 use crate::auth::{issue_token, require_admin};
 use crate::handlers::State;
+use crate::keys::ALL_TENANTS;
 use crate::read;
 
 // ── POST /v1/admin/login ──────────────────────────────────────────────────────
@@ -67,6 +68,7 @@ pub async fn me(req: HttpRequest, state: web::Data<State>) -> impl Responder {
 
 /// List every known tenant with its key counts and whether it has an `events`
 /// table yet. A tenant is "known" if it has a key OR has received events.
+/// Reader keys (tenant `*`) belong to no tenant and are not counted.
 pub async fn tenants(req: HttpRequest, state: web::Data<State>) -> impl Responder {
     if let Err(r) = require_admin(&req, &state) {
         return r;
@@ -86,6 +88,10 @@ pub async fn tenants(req: HttpRequest, state: web::Data<State>) -> impl Responde
                 let Some(t) = r.get("tenant").and_then(|v| v.as_str()) else {
                     continue;
                 };
+                // A reader key's `*` is a reach, not a tenant.
+                if t == ALL_TENANTS {
+                    continue;
+                }
                 let active = r.get("active").and_then(|v| v.as_u64()).unwrap_or(0) == 1;
                 let e = map.entry(t.to_string()).or_default();
                 e.keys += 1;
@@ -129,7 +135,7 @@ pub async fn list_events(
         return r;
     }
     let q = qs.into_inner();
-    let (tenants, cross) = match read::resolve_admin_tenants(&state, q.get("tenant")).await {
+    let (tenants, cross) = match read::resolve_tenant_param(&state, q.get("tenant")).await {
         Ok(t) => t,
         Err(r) => return r,
     };
@@ -175,7 +181,7 @@ pub async fn stats(
         return r;
     }
     let q = qs.into_inner();
-    let (tenants, cross) = match read::resolve_admin_tenants(&state, q.get("tenant")).await {
+    let (tenants, cross) = match read::resolve_tenant_param(&state, q.get("tenant")).await {
         Ok(t) => t,
         Err(r) => return r,
     };
