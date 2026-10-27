@@ -57,7 +57,8 @@ SECRET={'JWT_SECRET','ADMIN_PASSWORD'}
 REFERENCE={k for k in cfg_all if k.endswith('_INGEST_KEY')}
 
 # Substituted into the manifests below, not read by any pod.
-DEPLOY_ONLY={'REGISTRY_HOST','TAILNET','TS_INGEST_HOST','TS_DASHBOARD_HOST','TS_PROXY_CLASS'}
+DEPLOY_ONLY={'REGISTRY_HOST','TAILNET','TS_INGEST_HOST','TS_DASHBOARD_HOST','TS_PROXY_CLASS',
+             'PUBLIC_INGEST_HOST'}
 
 cfg={k:v for k,v in cfg_all.items() if k not in SECRET|REFERENCE|DEPLOY_ONLY}
 sec={k:v for k,v in cfg_all.items() if k in SECRET}
@@ -101,6 +102,11 @@ for k,v in subs.items():
     if not v: sys.exit(f"error: nothing to substitute for {k} "
                        f"(set {'TAG in the environment' if k=='__TAG__' else SRC[k]+' in '+ENV_K8S})")
 
+# Optional placeholders: a template that uses one whose key is empty is not
+# rendered at all, so an installation opts in by setting the key.
+OPTIONAL = {'__PUBLIC_INGEST_HOST__': 'PUBLIC_INGEST_HOST'}
+subs.update({p: cfg_all.get(k, '') for p, k in OPTIONAL.items()})
+
 n=0
 for src in sorted(glob.glob('k8s/*.yaml')):
     # 00-config.yaml is GENERATED above, not a template. An older layout wrote
@@ -111,6 +117,10 @@ for src in sorted(glob.glob('k8s/*.yaml')):
         print(f"  note: ignoring {src} — generated, not a template. Safe to delete.", file=sys.stderr)
         continue
     text=open(src).read()
+    unset=[p for p in OPTIONAL if p in text and not subs[p]]
+    if unset:
+        print(f"  note: skipping {src} — {', '.join(OPTIONAL[p] for p in unset)} unset", file=sys.stderr)
+        continue
     for k,v in subs.items(): text=text.replace(k,v)
     left=re.findall(r'__[A-Z_]+__', text)
     if left: sys.exit(f"error: {src} still has placeholders after substitution: {sorted(set(left))}")

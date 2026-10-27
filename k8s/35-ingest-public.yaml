@@ -1,0 +1,28 @@
+# Public ingest — POST /v1/events for apps OFF the tailnet, through an edge proxy.
+#
+# OPTIONAL: render-config.sh renders this file only when PUBLIC_INGEST_HOST is
+# set in .env.k8s; without it the gateway stays tailnet-only.
+#
+# The edge proxy (outside this repo) owns the public URL, keeps only POST, rate
+# limits, and forwards to the cluster's Ingress controller (class traefik) with
+# the path rewritten to /v1/events and Host set to PUBLIC_INGEST_HOST. This rule
+# matches that Host and that one exact path, so nothing else of the gateway --
+# the read API, /v1/admin/*, the dashboard -- is routed from the edge.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ingest-public
+  namespace: clicklog
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: __PUBLIC_INGEST_HOST__
+      http:
+        paths:
+          - path: /v1/events
+            pathType: Exact
+            backend:
+              service:
+                name: ingest-api
+                port:
+                  name: http

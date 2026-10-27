@@ -52,6 +52,7 @@ reschedules and every caller uses one name:
 | Service | Endpoint | Exposure |
 |---------|----------|----------|
 | ingest-api | `http://clicklog-ingest.<tailnet>.ts.net:8080` | overlay device |
+| ingest-api, public (optional) | `POST /v1/events` only, through an edge proxy | Ingress `k8s/35-ingest-public.yaml`, rendered when `PUBLIC_INGEST_HOST` is set |
 | frontend (dashboard) | `http://clicklog.<tailnet>.ts.net` | overlay device |
 | mcp (AI read tools) | `http://clicklog.<tailnet>.ts.net/mcp` | via the dashboard's nginx |
 | clickhouse | internal-only (`clickhouse:8123`) | NetworkPolicy: gateway only |
