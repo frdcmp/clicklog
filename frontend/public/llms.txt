@@ -111,7 +111,7 @@ what varies.
 ## Rust apps: use the crate
 
 If the app is Rust, do not write a client: add the `clicklog` crate
-(`clicklog = { git = "https://github.com/frdcmp/clicklog", tag = "client-rs-v0.1.0", features = ["log", "actix"] }`)
+(`clicklog = { git = "https://github.com/frdcmp/clicklog", tag = "client-rs-v0.1.1", features = ["log", "actix"] }`)
 and wire it as its README says (https://github.com/frdcmp/clicklog/tree/master/client-rs):
 `clicklog::log::install(...)` and `clicklog::init_from_env()` at startup,
 `.wrap(clicklog::actix::AccessLog::new().who(...))`, and

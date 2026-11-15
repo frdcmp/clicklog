@@ -19,7 +19,7 @@ it chooses:
 
 ```toml
 [dependencies]
-clicklog = { git = "https://github.com/frdcmp/clicklog", tag = "client-rs-v0.1.0", features = ["log", "actix"] }
+clicklog = { git = "https://github.com/frdcmp/clicklog", tag = "client-rs-v0.1.1", features = ["log", "actix"] }
 ```
 
 The environment, as for any clicklog client:
@@ -95,5 +95,4 @@ anything else goes in `attrs`. Message and attributes are cut at 16 KiB.
 Change the version in `Cargo.toml`, run `cargo test --all-features`, commit, and tag
 `client-rs-v<version>`; apps move by changing their `tag`.
 
-MIT ([LICENSE](LICENSE)), unlike the gateway's AGPL-3.0: linking this crate puts no obligation on
-the app.
+AGPL-3.0-only, as the rest of clicklog.

@@ -224,13 +224,12 @@ you'd rather send once a second than per event.
 
 ### Rust apps — the `clicklog` crate
 
-A Rust app need not write the client: [`client-rs/`](client-rs/README.md) is it, as a crate
-(MIT). Batched fire-and-forget sending, off without the URL, and with features for a `log` tee
+A Rust app need not write the client: [`client-rs/`](client-rs/README.md) is it, as a crate. Batched fire-and-forget sending, off without the URL, and with features for a `log` tee
 (warnings and errors become events) and Actix Web (an access-log middleware that logs the route
 pattern, never the path, and the public endpoint pages report their errors to). Depend on a tag:
 
 ```toml
-clicklog = { git = "https://github.com/frdcmp/clicklog", tag = "client-rs-v0.1.0", features = ["log", "actix"] }
+clicklog = { git = "https://github.com/frdcmp/clicklog", tag = "client-rs-v0.1.1", features = ["log", "actix"] }
 ```
 
 ### The event standard (enforced — no fallback)
