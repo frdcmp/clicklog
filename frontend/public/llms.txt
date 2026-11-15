@@ -108,6 +108,16 @@ On every event, set `source`, `server` (from an env var like `SERVER_NAME`),
 and `app_version` centrally in one small emit helper, so call sites only pass
 what varies.
 
+## Rust apps: use the crate
+
+If the app is Rust, do not write a client: add the `clicklog` crate
+(`clicklog = { git = "https://github.com/frdcmp/clicklog", tag = "client-rs-v0.1.0", features = ["log", "actix"] }`)
+and wire it as its README says (https://github.com/frdcmp/clicklog/tree/master/client-rs):
+`clicklog::log::install(...)` and `clicklog::init_from_env()` at startup,
+`.wrap(clicklog::actix::AccessLog::new().who(...))`, and
+`clicklog::Event::new(category, event_type, severity)...emit()` for domain events.
+The rest of this guide (what to instrument, verifying) still applies.
+
 ## Implementation shape
 
 Write one tiny module (~30–60 lines in most languages), no dependencies beyond

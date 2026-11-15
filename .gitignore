@@ -33,3 +33,6 @@ deploy.sh
 # Editor / OS noise
 *.bak
 .DS_Store
+
+# The Rust client is a library: apps resolve their own lock
+client-rs/Cargo.lock
