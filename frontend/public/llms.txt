@@ -31,6 +31,16 @@ TELEMETRY_API_KEY="ik_…"
 The key is minted per project in the clicklog admin dashboard; the developer
 already has it or knows how to get one.
 
+**Apps that run on people's devices** (a phone app, a desktop app, a page
+posting from the browser) can't reach a private network: they post to the
+deployment's **public ingest URL**, if it has one (ask the developer), which
+accepts `POST /v1/events` and nothing else, rate-limited per address. The key
+ships inside the app, so assume it can be read out of it: give the app its own
+tenant's key, never one shared with a backend, and send nothing there you
+wouldn't want a stranger to add to (no secrets, no other users' data). An app
+that has a backend of its own should send its errors through that backend
+instead, so no key reaches the device.
+
 ## Client rules (non-negotiable)
 
 1. **Fire-and-forget.** POST the event(s) and move on. Never let telemetry
@@ -141,7 +151,7 @@ curl -s -X POST "$TELEMETRY_INGEST_URL" \
 ```
 
 Read events back with the **same key** (base URL = ingest URL without
-`/v1/events`):
+`/v1/events`; on the private URL only: the public ingest refuses every read):
 
 ```bash
 # recent events
