@@ -52,7 +52,7 @@ reschedules and every caller uses one name:
 | Service | Endpoint | Exposure |
 |---------|----------|----------|
 | ingest-api | `http://clicklog-ingest.<tailnet>.ts.net:8080` | overlay device |
-| ingest-api, public (optional) | `POST /v1/events` only, through an edge proxy | Ingress `k8s/35-ingest-public.yaml`, rendered when `PUBLIC_INGEST_HOST` is set |
+| ingest-api, public (optional) | `POST /v1/events` only, through an edge proxy | Ingress `k8s/35-ingest-public.yaml`, rendered when `PUBLIC_INGEST_HOST` is set; or a Cloudflare tunnel route straight to `ingest-api` (path `^/v1/events$`) with a WAF rule blocking every other method and path, since `GET /v1/events` is the read API |
 | frontend (dashboard) | `http://clicklog.<tailnet>.ts.net` | overlay device |
 | mcp (AI read tools) | `http://clicklog.<tailnet>.ts.net/mcp` | via the dashboard's nginx |
 | clickhouse | internal-only (`clickhouse:8123`) | NetworkPolicy: gateway only |
